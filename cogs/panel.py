@@ -239,7 +239,7 @@ class Panel(commands.Cog):
             self.bot.add_view(ps_view)
             print("✅ Registered persistent PS Panel view")
 
-            # Register Verify Panel View (NEW DROPDOWN VERSION)
+            # Register Verify Panel View
             try:
                 from cogs.verify import VerifyPanelView
                 verify_view = VerifyPanelView()
@@ -446,9 +446,10 @@ class Panel(commands.Cog):
                 name="🔐 **7. Verification**",
                 value=(
                     "• **Verify with Double Counter** first.\n"
-                    "• **Choose your method** from the dropdown below.\n"
-                    "• **Code Verification**: Add the code to your Roblox profile.\n"
-                    "• **Game Verification**: Join `RHVerif` to auto-verify!"
+                    "• **Link your Roblox account** using `/verify <username>`.\n"
+                    "• **Add the verification code** to your Roblox profile.\n"
+                    "• **Click 'I've Added It'** to complete verification.\n"
+                    "• **Need help?** Open a ticket in <#1535906243435040788>."
                 ),
                 inline=False
             )
@@ -552,19 +553,32 @@ class Panel(commands.Cog):
             )
 
             verify_embed.add_field(
-                name="📌 Step 2: Choose a Method",
+                name="📌 Step 2: Start Verification",
                 value=(
-                    "Select **Code Verification** to put a code in your Roblox profile.\n"
-                    "OR select **Game Verification** to join `RHVerif` and auto-link."
+                    "Click the **Start Verification** button below or use the command:\n"
+                    "`/verify <your_roblox_username>`\n\n"
+                    "**Example:** `/verify Nixx`"
                 ),
                 inline=False
             )
 
             verify_embed.add_field(
-                name="📌 Step 3: Confirm",
+                name="📌 Step 3: Add Code to Roblox Profile",
                 value=(
-                    "**For Code:** Paste the code into your Roblox **About** section and click 'I've Added It'.\n"
-                    "**For Game:** Join the game and click 'I've Joined the Game'."
+                    "1. Go to your Roblox profile settings\n"
+                    "2. Edit your **About** section\n"
+                    "3. Add the verification code provided by the bot\n"
+                    "4. Save your profile\n\n"
+                    "💡 **Tip:** If the code gets censored, click **🔄 Regenerate Code** for a new one!"
+                ),
+                inline=False
+            )
+
+            verify_embed.add_field(
+                name="📌 Step 4: Confirm Verification",
+                value=(
+                    "After adding the code to your profile, click the **✅ I've Added It** button.\n"
+                    "The bot will check if the code is in your profile and complete the verification."
                 ),
                 inline=False
             )
@@ -607,13 +621,15 @@ class Panel(commands.Cog):
             else:
                 verify_embed.set_footer(text="Raid Hub • Verification System")
 
-            # ── THE CRITICAL FIX ──────────────────────────────────────────────
+            await verify_channel.send(embed=verify_embed)
+
             from cogs.verify import VerifyPanelView
             verify_view = VerifyPanelView()
             self.bot.add_view(verify_view)
-            
-            # Send the embed AND view in ONE SINGLE MESSAGE
-            await verify_channel.send(embed=verify_embed, view=verify_view)
+            await verify_channel.send(
+                "**Click the button below to start verification!**",
+                view=verify_view
+            )
 
             # ── Send Raid Panel ──────────────────────────────────────────────
             raid_embed = discord.Embed(
