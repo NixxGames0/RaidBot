@@ -1270,9 +1270,13 @@ async def complete_game_verification(bot: commands.Bot, roblox_id: int, roblox_n
     Looks up the pending game verification matching this roblox_id, finalizes it,
     and updates the user's waiting embed.
     """
+    roblox_id = int(roblox_id)  # normalize always
     discord_user_id = None
+    print(f"🔍 Looking for roblox_id={roblox_id} in pending_game_verifications: {list(pending_game_verifications.keys())}")
     for uid, data in list(pending_game_verifications.items()):
-        if data.get("roblox_id") == roblox_id or data.get("roblox_id") == int(roblox_id):
+        stored_id = int(data.get("roblox_id", -1))
+        print(f"   Checking uid={uid}, stored_id={stored_id}")
+        if stored_id == roblox_id:
             discord_user_id = uid
             break
 

@@ -351,13 +351,22 @@ class MyBot(commands.Bot):
         async def handle_roblox_callback(request):
             """Receives POST from Roblox game"""
             try:
-                data = await request.json()
+                raw_body = await request.text()
+                print(f"📥 Raw callback body: {raw_body}")
+
+                import json as _json
+                data = _json.loads(raw_body)
                 roblox_id = data.get('roblox_id')
                 roblox_name = data.get('roblox_name')
-                
+
+                print(f"📦 Parsed: roblox_id={roblox_id!r} (type={type(roblox_id).__name__}), roblox_name={roblox_name!r}")
+
                 if not roblox_id or not roblox_name:
                     return web.Response(status=400, text="Invalid payload")
-                
+
+                # Normalize roblox_id to int always
+                roblox_id = int(roblox_id)
+
                 print(f"🟢 Received verification from Roblox game: {roblox_name} (ID: {roblox_id})")
                 
                 # Process verification securely in the background
@@ -371,17 +380,21 @@ class MyBot(commands.Bot):
                         )
 
                         # ── Check game-join verifications first ──────────────
+                        print(f"🔍 bot.py: pending_game_verifications has {len(pending_game_verifications)} entries")
+                        found_game = False
                         for uid, data in list(pending_game_verifications.items()):
-                            if data.get('roblox_id') == roblox_id or data.get('roblox_id') == int(roblox_id):
+                            if int(data.get('roblox_id', -1)) == roblox_id:
                                 print(f"🎮 Routing {roblox_name} to game verification handler.")
-                                await complete_game_verification(self, int(roblox_id), roblox_name)
-                                return
+                                await complete_game_verification(self, roblox_id, roblox_name)
+                                found_game = True
+                                break
+                        if found_game:
+                            return
 
-                        # ── Fall back: bio-code pending (shouldn't fire from
-                        #    game join but kept for safety) ───────────────────
+                        # ── Fall back: bio-code pending ───────────────────────
                         discord_user_id = None
                         for uid, data in list(pending_verifications.items()):
-                            if data.get('roblox_id') == roblox_id or data.get('roblox_id') == int(roblox_id):
+                            if int(data.get('roblox_id', -1)) == roblox_id:
                                 discord_user_id = uid
                                 break
 
