@@ -58,14 +58,20 @@ echo  [OK] Pushed to GitHub.
 echo  https://github.com/NixxGames0/RaidBot
 echo.
 
-:: [4/4] Render deploy
-echo  [4/4] Triggering Render deploy...
-curl -s -X POST "https://api.render.com/deploy/srv-d9s97cvavr4c73aoibdg?key=8UNOUJvRmjw" >nul 2>nul
+:: [4/4] Railway deploy via GraphQL API
+echo  [4/4] Triggering Railway deploy...
+
+curl -s -X POST "https://backboard.railway.com/graphql/v2" ^
+  -H "Authorization: Bearer d767fced-5893-48f6-befd-f8d41d15c3ad" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"query\":\"mutation { serviceInstanceRedeploy(serviceId: \\\"f2f4f617-73bd-49e7-8e26-2b0b64dd92e7\\\") }\"}" ^
+  >nul 2>nul
+
 if %errorlevel% equ 0 (
-    echo  [OK] Render deploy triggered!
-    echo  Monitor: https://dashboard.render.com
+    echo  [OK] Railway deploy triggered!
+    echo  Monitor: https://railway.com/project/7abd34d7-50f0-49d5-9415-4a11fe453c53
 ) else (
-    echo  [WARNING] curl failed. Manual deploy: https://dashboard.render.com
+    echo  [WARNING] curl failed. Manual deploy at railway.com
 )
 echo.
 
