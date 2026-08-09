@@ -46,6 +46,33 @@ async def send_log(bot: commands.Bot, embed: discord.Embed):
             print(f"Error sending log: {e}")
 
 
+# ── PS Code Copy View (ephemeral copy button) ──────────────────────────────────
+class PSCodeCopyView(discord.ui.View):
+    def __init__(self, code: str):
+        super().__init__(timeout=None)
+        self.code = code
+        # Add a link button styled as a copy helper
+        # Discord doesn\'t support true clipboard access in buttons,
+        # so we send the code in a separate ephemeral message the user can tap-select
+        self.add_item(PSCopyButton(code=code))
+
+
+class PSCopyButton(discord.ui.Button):
+    def __init__(self, code: str):
+        super().__init__(
+            label="📋 Copy Code",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"ps_copy_{code}"
+        )
+        self.code = code
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"```\n{self.code}\n```\nSelect the text above and copy it!",
+            ephemeral=True
+        )
+
+
 # ── PS Panel View ────────────────────────────────────────────────────────────
 class PSPanelView(discord.ui.View):
     def __init__(self):
@@ -101,7 +128,7 @@ class PSPanelView(discord.ui.View):
 
             # Get an available code
             available = await d1_query(
-                "SELECT code FROM codes WHERE is_using = 0 LIMIT 1"
+                "SELECT code FROM codes WHERE is_using = 0 ORDER BY RANDOM() LIMIT 1"
             )
             if not available["results"]:
                 return await interaction.followup.send(
@@ -132,14 +159,15 @@ class PSPanelView(discord.ui.View):
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
-            embed.description = f"### `{code}`\n*Tap to copy*"
+            embed.description = f"### `{code}`"
             embed.add_field(
                 name="\u200b",
                 value="🕐 This code is assigned to you for **12 hours**.\n"
                       "💡 Click **Release My Code** when you're done to return it early!",
                 inline=False
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            copy_view = PSCodeCopyView(code=code)
+            await interaction.followup.send(embed=embed, view=copy_view, ephemeral=True)
 
             # Log it
             log_embed = discord.Embed(
@@ -217,6 +245,56 @@ class PSPanelView(discord.ui.View):
             log_embed.add_field(name="Code", value=f"`{released}`", inline=True)
             log_embed.set_footer(text=f"User ID: {member.id}")
             await send_log(bot, log_embed)
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+    @discord.ui.button(
+        label="Reveal My Code",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔍",
+        custom_id="ps_reveal_code"
+    )
+    async def reveal_code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        member = interaction.user
+
+        try:
+            user_row = await d1_query(
+                "SELECT ps_codes FROM users WHERE discord_id = ?",
+                [str(member.id)]
+            )
+
+            if not user_row["results"]:
+                return await interaction.followup.send(
+                    "❌ You don't have an active PS code.",
+                    ephemeral=True
+                )
+
+            current_codes = json.loads(user_row["results"][0]["ps_codes"] or "[]")
+            if not current_codes:
+                return await interaction.followup.send(
+                    "❌ You don't have an active PS code. Claim one with **Get Raid Code**!",
+                    ephemeral=True
+                )
+
+            code = current_codes[0]
+
+            embed = discord.Embed(
+                title="🔍 Your Active PS Code",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.description = f"### `{code}`"
+            embed.add_field(
+                name="\u200b",
+                value="🕐 This code is still active and assigned to you.\n"
+                      "🔓 Click **Release My Code** when you're done!",
+                inline=False
+            )
+            copy_view = PSCodeCopyView(code=code)
+            await interaction.followup.send(embed=embed, view=copy_view, ephemeral=True)
 
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
