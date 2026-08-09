@@ -46,33 +46,6 @@ async def send_log(bot: commands.Bot, embed: discord.Embed):
             print(f"Error sending log: {e}")
 
 
-# ── PS Code Copy View (ephemeral copy button) ──────────────────────────────────
-class PSCodeCopyView(discord.ui.View):
-    def __init__(self, code: str):
-        super().__init__(timeout=None)
-        self.code = code
-        # Add a link button styled as a copy helper
-        # Discord doesn\'t support true clipboard access in buttons,
-        # so we send the code in a separate ephemeral message the user can tap-select
-        self.add_item(PSCopyButton(code=code))
-
-
-class PSCopyButton(discord.ui.Button):
-    def __init__(self, code: str):
-        super().__init__(
-            label="📋 Copy Code",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"ps_copy_{code}"
-        )
-        self.code = code
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"```\n{self.code}\n```\nSelect the text above and copy it!",
-            ephemeral=True
-        )
-
-
 # ── PS Panel View ────────────────────────────────────────────────────────────
 class PSPanelView(discord.ui.View):
     def __init__(self):
@@ -166,8 +139,7 @@ class PSPanelView(discord.ui.View):
                       "💡 Click **Release My Code** when you're done to return it early!",
                 inline=False
             )
-            copy_view = PSCodeCopyView(code=code)
-            await interaction.followup.send(embed=embed, view=copy_view, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
             # Log it
             log_embed = discord.Embed(
@@ -293,8 +265,7 @@ class PSPanelView(discord.ui.View):
                       "🔓 Click **Release My Code** when you're done!",
                 inline=False
             )
-            copy_view = PSCodeCopyView(code=code)
-            await interaction.followup.send(embed=embed, view=copy_view, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
