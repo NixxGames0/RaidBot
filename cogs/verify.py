@@ -72,7 +72,6 @@ async def send_log(bot: commands.Bot, embed: discord.Embed):
         except Exception as e:
             print(f"Error sending log: {e}")
 
-
 async def send_verification_log(bot: commands.Bot, embed: discord.Embed):
     """Send a verification log to the manual verification channel"""
     channel = bot.get_channel(MANUAL_VERIFY_CHANNEL_ID)
@@ -87,17 +86,14 @@ async def send_verification_log(bot: commands.Bot, embed: discord.Embed):
 def xp_needed_for_level(level: int) -> int:
     return 5 * (level ** 2) + 50 * level + 100
 
-
 def total_xp_for_level(level: int) -> int:
     return sum(xp_needed_for_level(l) for l in range(level))
-
 
 def level_from_xp(xp: int) -> int:
     level = 0
     while total_xp_for_level(level + 1) <= xp:
         level += 1
     return level
-
 
 async def award_xp_to_user(user_id: int, amount: int, member=None):
     """Award XP to a user and handle level ups"""
@@ -159,12 +155,10 @@ def get_roblox_user_id_sync(username: str):
         print(f"Error getting Roblox user ID: {e}")
         return None
 
-
 async def get_roblox_user_id(username: str):
     """Get Roblox user ID from username (asynchronous)"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, partial(get_roblox_user_id_sync, username))
-
 
 async def get_roblox_profile(user_id: int):
     """Get Roblox profile data"""
@@ -180,7 +174,6 @@ async def get_roblox_profile(user_id: int):
         print(f"Error getting Roblox profile: {e}")
         return None
 
-
 async def get_roblox_friend_count(user_id: int) -> int:
     """Get the number of friends a Roblox user has"""
     try:
@@ -195,7 +188,6 @@ async def get_roblox_friend_count(user_id: int) -> int:
     except Exception:
         return 0
 
-
 async def get_roblox_creation_date(user_id: int) -> datetime:
     """Get the creation date of a Roblox account"""
     try:
@@ -205,7 +197,6 @@ async def get_roblox_creation_date(user_id: int) -> datetime:
         return None
     except Exception:
         return None
-
 
 async def get_roblox_badges(user_id: int) -> list:
     """Get badges from a Roblox account"""
@@ -229,7 +220,6 @@ async def get_roblox_badges(user_id: int) -> list:
     except Exception as e:
         print(f"Error getting Roblox badges: {e}")
         return []
-
 
 async def check_account_flagged(user_id: int) -> tuple:
     """
@@ -265,7 +255,6 @@ async def check_account_flagged(user_id: int) -> tuple:
 
     return is_flagged, flags
 
-
 async def check_roblox_ownership(user_id: int, verification_code: str) -> bool:
     """Check if a Roblox user has the verification code in their profile description."""
     try:
@@ -288,11 +277,9 @@ def generate_verification_code(length: int = 8) -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
-
 def format_code_with_spaces(code: str) -> str:
     """Format code with spaces every 4 characters for readability"""
     return ' '.join(code[i:i+4] for i in range(0, len(code), 4))
-
 
 async def finalize_verification(bot: commands.Bot, interaction: discord.Interaction,
                                 target: discord.Member, roblox: str, roblox_id: int,
@@ -412,7 +399,6 @@ async def finalize_verification(bot: commands.Bot, interaction: discord.Interact
     )
     main_embed.add_field(name="Roblox", value=f"`{roblox}`", inline=True)
     await send_log(bot, main_embed)
-
 
 async def process_invite_reward(bot: commands.Bot, new_user: discord.Member, inviter_id: int):
     """Process invite reward for the inviter using the new XP system"""
@@ -746,6 +732,284 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Verification"):
         await interaction.followup.send("✅ Verification denied and user has been notified.", ephemeral=True)
 
 
+# ── Dropdown Views ──────────────────────────────────────────────────────────
+class VerifyTypeDropdown(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="📝 Code Verification", 
+                description="Put a code in your Roblox profile (1 hour timer)",
+                value="code",
+                emoji="✍️"
+            ),
+            discord.SelectOption(
+                label="🎮 Game Verification", 
+                description="Join the verification game to auto-link (2 minute timer)",
+                value="game",
+                emoji="🕹️"
+            )
+        ]
+        super().__init__(placeholder="Choose a verification method...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: VerifyPanelView = self.view
+        await view.handle_selection(interaction, self.values[0])
+
+
+class VerifyPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(VerifyTypeDropdown())
+
+    async def handle_selection(self, interaction: discord.Interaction, method: str):
+        if not is_verified(interaction.user):
+            return await interaction.response.send_message(
+                "❌ You must be verified with Double Counter first.", ephemeral=True
+            )
+
+        if method == "code":
+            await interaction.response.send_modal(VerifyModal()) # OLD CODE FLOW
+        elif method == "game":
+            await interaction.response.send_modal(VerifyGameModal()) # NEW GAME FLOW
+
+
+# ── Modals for Inputs ──────────────────────────────────────────────────────
+class VerifyModal(discord.ui.Modal, title="Verify Your Roblox Account"):
+    roblox_username = discord.ui.TextInput(
+        label="Roblox Username",
+        placeholder="Enter your Roblox username...",
+        required=True,
+        max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        # Check if user is Double Counter verified
+        if not is_verified(interaction.user):
+            return await interaction.followup.send(
+                "❌ You must be verified with Double Counter first before you can link your Roblox account.",
+                ephemeral=True
+            )
+
+        roblox_user = self.roblox_username.value.strip()
+
+        # Get Roblox user info
+        roblox_data = await get_roblox_user_id(roblox_user)
+        if not roblox_data:
+            return await interaction.followup.send(
+                f"❌ Roblox user `{roblox_user}` does not exist.",
+                ephemeral=True
+            )
+
+        roblox_name = roblox_data["name"]
+        roblox_id = roblox_data["id"]
+
+        # Check if Roblox account is already linked to another Discord user
+        claimed = await d1_query(
+            "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
+            [f'%"{roblox_name}"%']
+        )
+        if claimed["results"]:
+            owner_id = claimed["results"][0]["discord_id"]
+            if str(owner_id) != str(interaction.user.id):
+                return await interaction.followup.send(
+                    f"❌ `{roblox_name}` is already linked to another account.",
+                    ephemeral=True
+                )
+
+        # Check if account is flagged
+        is_flagged, flags = await check_account_flagged(roblox_id)
+
+        if is_flagged:
+            await send_manual_verification(
+                interaction.client,
+                interaction,
+                interaction.user,
+                roblox_name,
+                roblox_id,
+                flags
+            )
+            return
+
+        # Normal verification flow
+        code = generate_verification_code()
+        formatted_code = format_code_with_spaces(code)
+
+        # Store pending verification
+        pending_verifications[str(interaction.user.id)] = {
+            "roblox_name": roblox_name,
+            "roblox_id": roblox_id,
+            "code": code,
+            "formatted_code": formatted_code,
+            "timestamp": datetime.now(timezone.utc).timestamp()
+        }
+
+        embed = discord.Embed(
+            title="🔐 Roblox Ownership Verification",
+            description=f"To verify that you own the Roblox account **{roblox_name}**, please follow these steps:",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.add_field(
+            name="📝 Step 1",
+            value="Go to your Roblox profile settings and edit your **About** section.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="📝 Step 2",
+            value=f"Add this verification code to your **About** section (with or without spaces):\n```\n{formatted_code}\n```\n**Copy the code above** and paste it into your profile.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="📝 Step 3",
+            value="Click the **✅ I've Added It** button below when you're done.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="⏰ Time Limit",
+            value="You have **1 hour** to complete this verification.",
+            inline=True
+        )
+
+        embed.add_field(
+            name="🔄 Code Not Working?",
+            value="If the code is being censored by Roblox, click **🔄 Regenerate Code** for a new one.",
+            inline=True
+        )
+
+        embed.add_field(
+            name="🔒 Security",
+            value="This code is unique and generated for this verification attempt only.",
+            inline=True
+        )
+
+        embed.set_footer(text=f"Code will expire in 1 hour | Roblox ID: {roblox_id}")
+
+        view = VerifyConfirmView(user_id=str(interaction.user.id))
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        # Log verification started
+        log_embed = discord.Embed(
+            title="🔐 Verification Started",
+            color=discord.Color.yellow(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        log_embed.add_field(name="User", value=interaction.user.mention, inline=True)
+        log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
+        log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
+        await send_verification_log(interaction.client, log_embed)
+
+
+# ── NEW GAME VERIFICATION MODAL ────────────────────────────────────────────
+class VerifyGameModal(discord.ui.Modal, title="Game Verification"):
+    roblox_username = discord.ui.TextInput(
+        label="Roblox Username",
+        placeholder="Enter your Roblox username...",
+        required=True,
+        max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        # Check if user is Double Counter verified
+        if not is_verified(interaction.user):
+            return await interaction.followup.send(
+                "❌ You must be verified with Double Counter first before you can link your Roblox account.",
+                ephemeral=True
+            )
+
+        roblox_user = self.roblox_username.value.strip()
+
+        roblox_data = await get_roblox_user_id(roblox_user)
+        if not roblox_data:
+            return await interaction.followup.send(
+                f"❌ Roblox user `{roblox_user}` does not exist.",
+                ephemeral=True
+            )
+
+        roblox_name = roblox_data["name"]
+        roblox_id = roblox_data["id"]
+
+        claimed = await d1_query(
+            "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
+            [f'%"{roblox_name}"%']
+        )
+        if claimed["results"]:
+            owner_id = claimed["results"][0]["discord_id"]
+            if str(owner_id) != str(interaction.user.id):
+                return await interaction.followup.send(
+                    f"❌ `{roblox_name}` is already linked to another account.",
+                    ephemeral=True
+                )
+
+        # Check if account is flagged
+        is_flagged, flags = await check_account_flagged(roblox_id)
+
+        if is_flagged:
+            await send_manual_verification(
+                interaction.client,
+                interaction,
+                interaction.user,
+                roblox_name,
+                roblox_id,
+                flags
+            )
+            return
+
+        # Store pending verification
+        pending_verifications[str(interaction.user.id)] = {
+            "roblox_name": roblox_name,
+            "roblox_id": roblox_id,
+            "timestamp": datetime.now(timezone.utc).timestamp(),
+            "type": "game" # Add a type to differentiate it
+        }
+
+        GAME_ID = os.getenv("ROBLOX_GAME_ID")
+        if not GAME_ID:
+            return await interaction.followup.send(
+                "❌ Bot configuration error: Missing ROBLOX_GAME_ID in Environment Variables.", 
+                ephemeral=True
+            )
+
+        join_link = f"https://www.roblox.com/games/{GAME_ID}/RHVerif"
+
+        embed = discord.Embed(
+            title="🎮 Game Verification",
+            description=f"To prove you own **{roblox_name}**, join the verification game.",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="📝 Step 1", 
+            value=f"**Click this link to join:**\n[Join Verification Game]({join_link})", 
+            inline=False
+        )
+        embed.add_field(
+            name="📝 Step 2", 
+            value="Once you spawn in the game, click the **✅ I've Joined the Game** button below to verify.", 
+            inline=False
+        )
+        embed.set_footer(text="Timeout: 2 minutes")
+
+        view = GameConfirmView(user_id=str(interaction.user.id))
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        log_embed = discord.Embed(
+            title="🎮 Game Verification Started",
+            color=discord.Color.yellow(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        log_embed.add_field(name="User", value=interaction.user.mention, inline=True)
+        log_embed.add_field(name="Roblox", value=f"`{roblox_name}`", inline=True)
+        await send_verification_log(interaction.client, log_embed)
+
+
+# ── Confirm Views ────────────────────────────────────────────────────────────
 class VerifyConfirmView(discord.ui.View):
     def __init__(self, user_id: str):
         super().__init__(timeout=VERIFICATION_TIMEOUT)
@@ -916,155 +1180,37 @@ class VerifyConfirmView(discord.ui.View):
         await send_verification_log(interaction.client, log_embed)
 
 
-class VerifyModal(discord.ui.Modal, title="Verify Your Roblox Account"):
-    roblox_username = discord.ui.TextInput(
-        label="Roblox Username",
-        placeholder="Enter your Roblox username...",
-        required=True,
-        max_length=50
-    )
+# ── NEW GAME CONFIRM VIEW ──────────────────────────────────────────────────
+class GameConfirmView(discord.ui.View):
+    def __init__(self, user_id: str):
+        super().__init__(timeout=120) # 2 minute timeout
+        self.user_id = user_id
 
-    async def on_submit(self, interaction: discord.Interaction):
+    @discord.ui.button(label="✅ I've Joined the Game", style=discord.ButtonStyle.success)
+    async def confirm_join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("❌ Not your verification.", ephemeral=True)
+        
         await interaction.response.defer(ephemeral=True)
 
-        # Check if user is Double Counter verified
-        if not is_verified(interaction.user):
-            return await interaction.followup.send(
-                "❌ You must be verified with Double Counter first before you can link your Roblox account.",
-                ephemeral=True
-            )
+        if self.user_id not in pending_verifications:
+            return await interaction.followup.send("❌ Verification expired or not found. Start again.", ephemeral=True)
+        
+        data = pending_verifications[self.user_id]
+        # If they picked game in the panel, it will have "type": "game"
+        # If they did a direct /verify command, it won't have a type.
+        # We'll let it pass as long as they aren't in a "code" flow.
+        if data.get("type") == "code":
+            return await interaction.followup.send("❌ This button is for game verification only. Use 'I've Added It' above.", ephemeral=True)
 
-        roblox_user = self.roblox_username.value.strip()
+        # Remove pending
+        del pending_verifications[self.user_id]
 
-        # Get Roblox user info
-        roblox_data = await get_roblox_user_id(roblox_user)
-        if not roblox_data:
-            return await interaction.followup.send(
-                f"❌ Roblox user `{roblox_user}` does not exist.",
-                ephemeral=True
-            )
-
-        roblox_name = roblox_data["name"]
-        roblox_id = roblox_data["id"]
-
-        # Check if Roblox account is already linked to another Discord user
-        claimed = await d1_query(
-            "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
-            [f'%"{roblox_name}"%']
+        # Finalize
+        await finalize_verification(
+            interaction.client, interaction, interaction.user,
+            data["roblox_name"], data["roblox_id"]
         )
-        if claimed["results"]:
-            owner_id = claimed["results"][0]["discord_id"]
-            if str(owner_id) != str(interaction.user.id):
-                return await interaction.followup.send(
-                    f"❌ `{roblox_name}` is already linked to another account.",
-                    ephemeral=True
-                )
-
-        # Check if account is flagged
-        is_flagged, flags = await check_account_flagged(roblox_id)
-
-        if is_flagged:
-            await send_manual_verification(
-                interaction.client,
-                interaction,
-                interaction.user,
-                roblox_name,
-                roblox_id,
-                flags
-            )
-            return
-
-        # Normal verification flow
-        code = generate_verification_code()
-        formatted_code = format_code_with_spaces(code)
-
-        # Store pending verification
-        pending_verifications[str(interaction.user.id)] = {
-            "roblox_name": roblox_name,
-            "roblox_id": roblox_id,
-            "code": code,
-            "formatted_code": formatted_code,
-            "timestamp": datetime.now(timezone.utc).timestamp()
-        }
-
-        embed = discord.Embed(
-            title="🔐 Roblox Ownership Verification",
-            description=f"To verify that you own the Roblox account **{roblox_name}**, please follow these steps:",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
-
-        embed.add_field(
-            name="📝 Step 1",
-            value="Go to your Roblox profile settings and edit your **About** section.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📝 Step 2",
-            value=f"Add this verification code to your **About** section (with or without spaces):\n```\n{formatted_code}\n```\n**Copy the code above** and paste it into your profile.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📝 Step 3",
-            value="Click the **✅ I've Added It** button below when you're done.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="⏰ Time Limit",
-            value="You have **1 hour** to complete this verification.",
-            inline=True
-        )
-
-        embed.add_field(
-            name="🔄 Code Not Working?",
-            value="If the code is being censored by Roblox, click **🔄 Regenerate Code** for a new one.",
-            inline=True
-        )
-
-        embed.add_field(
-            name="🔒 Security",
-            value="This code is unique and generated for this verification attempt only.",
-            inline=True
-        )
-
-        embed.set_footer(text=f"Code will expire in 1 hour | Roblox ID: {roblox_id}")
-
-        view = VerifyConfirmView(user_id=str(interaction.user.id))
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-        # Log verification started
-        log_embed = discord.Embed(
-            title="🔐 Verification Started",
-            color=discord.Color.yellow(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        log_embed.add_field(name="User", value=interaction.user.mention, inline=True)
-        log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
-        log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
-        await send_verification_log(interaction.client, log_embed)
-
-
-class VerifyPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Start Verification",
-        style=discord.ButtonStyle.success,
-        emoji="🔐",
-        custom_id="verify_start_button"
-    )
-    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_verified(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You must be verified with Double Counter first before you can link your Roblox account.",
-                ephemeral=True
-            )
-
-        await interaction.response.send_modal(VerifyModal())
 
 
 # ── Verify Cog ──────────────────────────────────────────────────────────────
@@ -1090,120 +1236,134 @@ class Verify(commands.Cog):
 
     @app_commands.command(
         name="verify",
-        description="Link your Roblox account with ownership verification"
+        description="Link your Roblox account (leave blank for panel, or type username for direct)"
     )
-    @app_commands.describe(roblox_user="Your Roblox username")
+    @app_commands.describe(roblox_user="(Optional) Your Roblox username for direct verification")
     @app_commands.checks.cooldown(1, 10)
-    async def verify(self, interaction: discord.Interaction, roblox_user: str):
+    async def verify(self, interaction: discord.Interaction, roblox_user: str = None):
         if not is_verified(interaction.user):
             return await interaction.response.send_message(
                 "❌ You must be verified with Double Counter first.",
                 ephemeral=True
             )
 
-        await interaction.response.defer(ephemeral=True)
+        # ── METHOD 1: User provided a username (Direct Verification) ──
+        if roblox_user:
+            await interaction.response.defer(ephemeral=True)
 
-        roblox_data = await get_roblox_user_id(roblox_user)
-        if not roblox_data:
-            return await interaction.followup.send(
-                f"❌ Roblox user `{roblox_user}` does not exist.",
-                ephemeral=True
-            )
-
-        roblox_name = roblox_data["name"]
-        roblox_id = roblox_data["id"]
-
-        # Check if already linked
-        claimed = await d1_query(
-            "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
-            [f'%"{roblox_name}"%']
-        )
-        if claimed["results"]:
-            owner_id = claimed["results"][0]["discord_id"]
-            if str(owner_id) != str(interaction.user.id):
+            roblox_data = await get_roblox_user_id(roblox_user)
+            if not roblox_data:
                 return await interaction.followup.send(
-                    f"❌ `{roblox_name}` is already linked to another account.",
+                    f"❌ Roblox user `{roblox_user}` does not exist.",
                     ephemeral=True
                 )
 
-        # Check if account is flagged
-        is_flagged, flags = await check_account_flagged(roblox_id)
+            roblox_name = roblox_data["name"]
+            roblox_id = roblox_data["id"]
 
-        if is_flagged:
-            await send_manual_verification(
-                self.bot,
-                interaction,
-                interaction.user,
-                roblox_name,
-                roblox_id,
-                flags
+            claimed = await d1_query(
+                "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
+                [f'%"{roblox_name}"%']
             )
-            return
+            if claimed["results"]:
+                owner_id = claimed["results"][0]["discord_id"]
+                if str(owner_id) != str(interaction.user.id):
+                    return await interaction.followup.send(
+                        f"❌ `{roblox_name}` is already linked to another account.",
+                        ephemeral=True
+                    )
 
-        # Normal verification flow
-        code = generate_verification_code()
-        formatted_code = format_code_with_spaces(code)
+            is_flagged, flags = await check_account_flagged(roblox_id)
+            if is_flagged:
+                await send_manual_verification(
+                    self.bot,
+                    interaction,
+                    interaction.user,
+                    roblox_name,
+                    roblox_id,
+                    flags
+                )
+                return
 
-        pending_verifications[str(interaction.user.id)] = {
-            "roblox_name": roblox_name,
-            "roblox_id": roblox_id,
-            "code": code,
-            "formatted_code": formatted_code,
-            "timestamp": datetime.now(timezone.utc).timestamp()
-        }
+            code = generate_verification_code()
+            formatted_code = format_code_with_spaces(code)
 
-        embed = discord.Embed(
-            title="🔐 Roblox Ownership Verification",
-            description=f"To verify that you own the Roblox account **{roblox_name}**, please follow these steps:",
-            color=discord.Color.blue(),
-            timestamp=datetime.now(timezone.utc)
-        )
+            pending_verifications[str(interaction.user.id)] = {
+                "roblox_name": roblox_name,
+                "roblox_id": roblox_id,
+                "code": code,
+                "formatted_code": formatted_code,
+                "timestamp": datetime.now(timezone.utc).timestamp()
+            }
 
-        embed.add_field(
-            name="📝 Step 1",
-            value="Go to your Roblox profile settings and edit your **About** section.",
-            inline=False
-        )
+            embed = discord.Embed(
+                title="🔐 Roblox Ownership Verification",
+                description=f"To verify that you own the Roblox account **{roblox_name}**, please follow these steps:",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(
+                name="📝 Step 1",
+                value="Go to your Roblox profile settings and edit your **About** section.",
+                inline=False
+            )
+            embed.add_field(
+                name="📝 Step 2",
+                value=f"Add this verification code to your **About** section (with or without spaces):\n```\n{formatted_code}\n```\n**Copy the code above** and paste it into your profile.",
+                inline=False
+            )
+            embed.add_field(
+                name="📝 Step 3",
+                value="Click the **✅ I've Added It** button below when you're done.",
+                inline=False
+            )
+            embed.add_field(
+                name="⏰ Time Limit",
+                value="You have **1 hour** to complete this verification.",
+                inline=True
+            )
+            embed.add_field(
+                name="🔄 Code Not Working?",
+                value="If the code is being censored by Roblox, click **🔄 Regenerate Code** for a new one.",
+                inline=True
+            )
+            embed.set_footer(text=f"Code will expire in 1 hour | Roblox ID: {roblox_id}")
 
-        embed.add_field(
-            name="📝 Step 2",
-            value=f"Add this verification code to your **About** section (with or without spaces):\n```\n{formatted_code}\n```\n**Copy the code above** and paste it into your profile.",
-            inline=False
-        )
+            view = VerifyConfirmView(user_id=str(interaction.user.id))
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-        embed.add_field(
-            name="📝 Step 3",
-            value="Click the **✅ I've Added It** button below when you're done.",
-            inline=False
-        )
+            log_embed = discord.Embed(
+                title="🔐 Verification Started",
+                color=discord.Color.yellow(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            log_embed.add_field(name="User", value=interaction.user.mention, inline=True)
+            log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
+            log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
+            await send_verification_log(self.bot, log_embed)
 
-        embed.add_field(
-            name="⏰ Time Limit",
-            value="You have **1 hour** to complete this verification.",
-            inline=True
-        )
+        # ── METHOD 2: No username provided (Open New Panel) ──
+        else:
+            embed = discord.Embed(
+                title="🔐 Verification Panel",
+                description="Select a verification method from the dropdown below to link your Roblox account.",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(
+                name="📝 Code Verification",
+                value="Put a code in your Roblox profile **About** section.",
+                inline=False
+            )
+            embed.add_field(
+                name="🎮 Game Verification",
+                value="Join the `RHVerif` Roblox game to auto-verify instantly.",
+                inline=False
+            )
+            embed.set_footer(text="Both methods require you to own the Roblox account.")
 
-        embed.add_field(
-            name="🔄 Code Not Working?",
-            value="If the code is being censored by Roblox, click **🔄 Regenerate Code** for a new one.",
-            inline=True
-        )
-
-        embed.set_footer(text=f"Code will expire in 1 hour | Roblox ID: {roblox_id}")
-
-        view = VerifyConfirmView(user_id=str(interaction.user.id))
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-        # Log verification started
-        log_embed = discord.Embed(
-            title="🔐 Verification Started",
-            color=discord.Color.yellow(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        log_embed.add_field(name="User", value=interaction.user.mention, inline=True)
-        log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
-        log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
-        await send_verification_log(self.bot, log_embed)
+            view = VerifyPanelView()
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(
         name="forceunverify",
