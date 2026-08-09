@@ -377,7 +377,10 @@ class Panel(commands.Cog):
                 ephemeral=True
             )
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception:
+            return  # Interaction expired (Discord 3s timeout) - user can retry
 
         try:
             # Get all the channels
