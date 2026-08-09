@@ -105,72 +105,45 @@ async def d1_query(sql: str, params: list = None):
 
 # ── Permission Helper Functions ──────────────────────────────────────────────
 def is_verified(member: discord.Member) -> bool:
-    """Check if user has the Verified role"""
     return any(role.id == VERIFIED_ROLE_ID for role in member.roles)
 
-
 def is_linked(member: discord.Member) -> bool:
-    """Check if user has the Linked role"""
     return any(role.id == LINKED_ROLE_ID for role in member.roles)
 
-
 def is_hoster(member: discord.Member) -> bool:
-    """Check if user has the Hoster role"""
     return any(role.id == HOSTER_ROLE_ID for role in member.roles)
 
-
 def is_elite_hoster(member: discord.Member) -> bool:
-    """Check if user has the Elite Hoster role"""
     return any(role.id == ELITE_HOSTER_ROLE_ID for role in member.roles)
 
-
 def is_trial_mod(member: discord.Member) -> bool:
-    """Check if user has the Trial Mod role"""
     return any(role.id == TRIAL_MOD_ROLE_ID for role in member.roles)
 
-
 def is_mod(member: discord.Member) -> bool:
-    """Check if user has the Mod role"""
     return any(role.id == MOD_ROLE_ID for role in member.roles)
 
-
 def is_head_staff(member: discord.Member) -> bool:
-    """Check if user has the Head Staff role"""
     return any(role.id == HEAD_STAFF_ROLE_ID for role in member.roles)
 
-
 def is_founder(member: discord.Member) -> bool:
-    """Check if user has the Founder role"""
     return any(role.id == FOUNDER_ROLE_ID for role in member.roles)
 
-
 def is_blacklisted(member: discord.Member) -> bool:
-    """Check if user has the Blacklisted role"""
     return any(role.id == BLACKLIST_ROLE_ID for role in member.roles)
 
-
 def is_staff(member: discord.Member) -> bool:
-    """Check if user has any staff role (Trial Mod+)"""
     return any(role.id in STAFF_ROLES for role in member.roles)
 
-
 def is_mod_or_higher(member: discord.Member) -> bool:
-    """Check if user is Mod or higher (excludes Trial Mod)"""
     return any(role.id in MOD_PLUS_ROLES for role in member.roles)
 
-
 def is_head_staff_or_founder(member: discord.Member) -> bool:
-    """Check if user is Head Staff or Founder"""
     return any(role.id in HEAD_STAFF_ROLES for role in member.roles)
 
-
 def is_hoster_or_higher(member: discord.Member) -> bool:
-    """Check if user has Hoster role or any staff role"""
     return any(role.id in HOSTER_PLUS_ROLES for role in member.roles)
 
-
 def get_hoster_bonus(member: discord.Member) -> float:
-    """Get the XP bonus multiplier for a member based on their roles"""
     if is_elite_hoster(member):
         return ELITE_HOSTER_XP_BONUS
     return 1.0
@@ -178,9 +151,7 @@ def get_hoster_bonus(member: discord.Member) -> float:
 
 # ── Database Initialization ──────────────────────────────────────────────────
 async def init_database():
-    """Initialize all database tables on startup"""
     try:
-        # ── Users table ──────────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS users (
                 discord_id TEXT PRIMARY KEY,
@@ -201,9 +172,6 @@ async def init_database():
                 weekly_updated_at TEXT
             )"""
         )
-        print("✅ users table created/verified")
-
-        # ── Blacklist table ─────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS blacklist (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,9 +182,6 @@ async def init_database():
                 created_at TEXT NOT NULL
             )"""
         )
-        print("✅ blacklist table created/verified")
-
-        # ── PS Codes table ──────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,9 +192,6 @@ async def init_database():
                 created_at TEXT NOT NULL
             )"""
         )
-        print("✅ codes table created/verified")
-
-        # ── Raids table ─────────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS raids (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,18 +207,12 @@ async def init_database():
                 created_at TEXT NOT NULL
             )"""
         )
-        print("✅ raids table created/verified")
-
-        # ── Bot Meta table ──────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS bot_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )"""
         )
-        print("✅ bot_meta table created/verified")
-
-        # ── Shop Items table ────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS shop_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,9 +221,6 @@ async def init_database():
                 created_at TEXT NOT NULL
             )"""
         )
-        print("✅ shop_items table created/verified")
-
-        # ── Tickets table ───────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -283,9 +236,6 @@ async def init_database():
                 message_id TEXT
             )"""
         )
-        print("✅ tickets table created/verified")
-
-        # ── Invite Tracking tables ─────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS invite_tracking (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -298,8 +248,6 @@ async def init_database():
                 used_at TEXT
             )"""
         )
-        print("✅ invite_tracking table created/verified")
-
         await d1_query(
             """CREATE TABLE IF NOT EXISTS invite_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,9 +258,8 @@ async def init_database():
                 uses INTEGER DEFAULT 0
             )"""
         )
-        print("✅ invite_codes table created/verified")
-
-        # ── Try adding missing columns (safe to run) ───────────────────────
+        
+        # Try adding missing columns (safe to run)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN weekly_points INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN weekly_updated_at TEXT",
@@ -321,10 +268,9 @@ async def init_database():
             try:
                 await d1_query(col_sql)
             except Exception:
-                pass  # Column already exists
+                pass
 
         print("✅ All database tables initialized successfully!")
-
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
         raise
@@ -338,7 +284,6 @@ intents.guilds = True
 intents.invites = True
 
 # ── Cog Load Order ──────────────────────────────────────────────────────────
-# hoster MUST load before raid (raid imports from hoster)
 COGS = [
     "cogs.ps_codes",
     "cogs.verify",
@@ -358,19 +303,15 @@ class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         self.guild_id = GUILD_ID
+        self.web_server = None
 
     async def setup_hook(self):
-        """Called when the bot is starting up"""
         print("🔧 Starting setup_hook...")
-
-        # Initialize database tables first
         try:
             await init_database()
         except Exception as e:
             print(f"⚠️ Database initialization failed: {e}")
-            # Continue loading - some features may fail but bot can still run
 
-        # Load all cogs
         for cog in COGS:
             try:
                 await self.load_extension(cog)
@@ -378,10 +319,8 @@ class MyBot(commands.Bot):
             except Exception as e:
                 print(f"❌ Failed to load {cog}: {e}")
 
-        # Sync commands to guild
         guild = discord.Object(id=self.guild_id)
         self.tree.copy_global_to(guild=guild)
-
         try:
             synced = await self.tree.sync(guild=guild)
             print(f"✅ Synced {len(synced)} commands: {[c.name for c in synced]}")
@@ -391,21 +330,100 @@ class MyBot(commands.Bot):
         print("✅ Bot setup complete!")
 
     async def on_ready(self):
-        """Called when the bot is fully ready"""
         print(f"✅ Logged in as {self.user} (ID: {self.user.id})")
         print(f"✅ Connected to guild: {self.guild_id}")
-        print(f"✅ Bot is ready!")
-
-        # Set bot status
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
                 name="Raids | /help"
             )
         )
+        
+        # ── Start the aiohttp web server after bot is ready ──
+        if self.web_server is None:
+            self.loop.create_task(self.start_web_server())
+
+    async def start_web_server(self):
+        """Starts the Roblox verification webhook server"""
+        from aiohttp import web
+        import json
+        
+        async def handle_roblox_callback(request):
+            """Receives POST from Roblox game"""
+            try:
+                data = await request.json()
+                roblox_id = data.get('roblox_id')
+                roblox_name = data.get('roblox_name')
+                
+                if not roblox_id or not roblox_name:
+                    return web.Response(status=400, text="Invalid payload")
+                
+                print(f"🟢 Received verification from Roblox game: {roblox_name} (ID: {roblox_id})")
+                
+                # Process verification securely in the background
+                async def process_verify():
+                    try:
+                        from cogs.verify import pending_verifications, finalize_verification
+                        
+                        discord_user_id = None
+                        # Find the Discord user waiting for this Roblox ID
+                        for uid, data in pending_verifications.items():
+                            if data.get('roblox_id') == roblox_id:
+                                discord_user_id = uid
+                                break
+                        
+                        if not discord_user_id:
+                            print(f"⚠️ Roblox user {roblox_name} attempted verify, but no pending Discord request found.")
+                            return
+                        
+                        # Remove from pending
+                        del pending_verifications[discord_user_id]
+                        
+                        # Get the Discord Member
+                        guild = self.get_guild(self.guild_id)
+                        member = guild.get_member(int(discord_user_id))
+                        
+                        if not member:
+                            print(f"❌ Could not find Discord member {discord_user_id} in the guild.")
+                            return
+                        
+                        # FINALIZE THE VERIFICATION!
+                        await finalize_verification(
+                            self,
+                            None, # No interaction (automated)
+                            member,
+                            roblox_name,
+                            roblox_id,
+                            manual=False
+                        )
+                        print(f"✅ Successfully auto-verified {roblox_name} -> {member.display_name}!")
+                        
+                    except Exception as e:
+                        print(f"❌ Error processing Roblox verification: {e}")
+                
+                # Fire and forget
+                self.loop.create_task(process_verify())
+                
+                return web.Response(text="OK")
+                
+            except Exception as e:
+                print(f"❌ Webhook error: {e}")
+                return web.Response(status=500, text="Internal error")
+
+        app = web.Application()
+        app.router.add_post('/auth/roblox_callback', handle_roblox_callback)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        # We run on PORT 8080 to avoid conflicting with Railway's default
+        site = web.TCPSite(runner, '0.0.0.0', 8080)
+        await site.start()
+        
+        print("✅ Roblox verification webhook running on port 8080")
+        self.web_server = site
 
     async def on_command_error(self, ctx, error):
-        """Global error handler for commands"""
         if isinstance(error, commands.CommandNotFound):
             return
         print(f"Command error: {error}")
@@ -416,21 +434,14 @@ class MyBot(commands.Bot):
                 pass
 
     async def on_application_command_error(self, interaction, error):
-        """Global error handler for slash commands"""
         if isinstance(error, discord.app_commands.CommandNotFound):
             return
         print(f"Application command error: {error}")
         try:
             if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"❌ An error occurred: {error}",
-                    ephemeral=True
-                )
+                await interaction.response.send_message(f"❌ An error occurred: {error}", ephemeral=True)
             else:
-                await interaction.followup.send(
-                    f"❌ An error occurred: {error}",
-                    ephemeral=True
-                )
+                await interaction.followup.send(f"❌ An error occurred: {error}", ephemeral=True)
         except:
             pass
 
