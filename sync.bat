@@ -58,39 +58,14 @@ echo  [OK] Pushed to GitHub.
 echo  https://github.com/NixxGames0/RaidBot
 echo.
 
-:: [4/4] Render deploy hook
+:: [4/4] Render deploy
 echo  [4/4] Triggering Render deploy...
-echo.
-
-set HOOK_FILE=render_deploy_hook.txt
-set DEPLOY_HOOK=
-
-if exist "%HOOK_FILE%" (
-    set /p DEPLOY_HOOK=<"%HOOK_FILE%"
-)
-
-if "%DEPLOY_HOOK%"=="" (
-    echo  No deploy hook saved.
-    echo.
-    echo  Get it from: Render Dashboard - RaidBot - Settings - Deploy Hook
-    echo.
-    set /p DEPLOY_HOOK="  Paste your Render Deploy Hook URL: "
-    if "%DEPLOY_HOOK%"=="" (
-        echo  [WARNING] No hook provided. Skipping deploy.
-        goto :start_bot
-    )
-    echo %DEPLOY_HOOK%> "%HOOK_FILE%"
-    echo  [OK] Hook saved.
-    echo.
-)
-
-curl -s -X POST "%DEPLOY_HOOK%" >nul 2>nul
+curl -s -X POST "https://api.render.com/deploy/srv-d9s97cvavr4c73aoibdg?key=8UNOUJvRmjw" >nul 2>nul
 if %errorlevel% equ 0 (
     echo  [OK] Render deploy triggered!
     echo  Monitor: https://dashboard.render.com
 ) else (
-    echo  [WARNING] curl failed or not found.
-    echo  Manual deploy: https://dashboard.render.com
+    echo  [WARNING] curl failed. Manual deploy: https://dashboard.render.com
 )
 echo.
 
