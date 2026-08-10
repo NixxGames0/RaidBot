@@ -29,6 +29,9 @@ CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
 ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
 ICONS_FOLDER = Path("icons")
 
+# ─── Bot's specific role ID for positioning ──────────────
+BOT_ROLE_ID = 1535635733791121443
+
 logger = logging.getLogger(__name__)
 
 # ─── Mapping: base name → role ID ──────────────────────
@@ -230,7 +233,6 @@ class RoleBuilderView(discord.ui.View):
         if existing_data:
             self.data["name"] = existing_data.get("name", "")
             self.data["color"] = existing_data.get("color", discord.Color.blurple())
-        self._message = None  # will store the original message
 
     def build_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -305,16 +307,25 @@ class RoleBuilderView(discord.ui.View):
                     reason=f"Custom role created by {interaction.user}"
                 )
 
-                # Position at the top
-                bot_top = max(guild.me.roles, key=lambda r: r.position)
-                target_position = max(1, bot_top.position - 1)
+                # ─── Position the role directly below the bot's specific role ───
+                bot_role = guild.get_role(BOT_ROLE_ID)
+                if bot_role:
+                    target_position = max(1, bot_role.position - 1)
+                else:
+                    # Fallback: use bot's highest role
+                    bot_top = max(guild.me.roles, key=lambda r: r.position)
+                    target_position = max(1, bot_top.position - 1)
+
                 try:
                     await role.edit(position=target_position)
-                except Exception:
+                    logger.info(f"✅ Custom role {role.name} placed at position {target_position}")
+                except Exception as e:
+                    logger.warning(f"Failed to set role position: {e}")
                     try:
                         await role.edit(position=1)
-                    except:
-                        pass
+                        logger.info("✅ Custom role placed at position 1 as fallback")
+                    except Exception as e2:
+                        logger.warning(f"Fallback also failed: {e2}")
 
                 await interaction.user.add_roles(role)
                 await create_custom_role_entry(interaction.user.id, role.id)
@@ -376,7 +387,9 @@ class RoleBuilderView(discord.ui.View):
         await interaction.response.send_message("❌ Role builder cancelled.", ephemeral=True)
         for child in self.children:
             child.disabled = True
-        await interaction.message.edit(view=self)
+        # Use edit_original_response for ephemeral messages
+        embed = self.build_embed()
+        await interaction.edit_original_response(embed=embed, view=self)
 
 
 class NameModal(discord.ui.Modal, title="Change Role Name"):
@@ -449,7 +462,6 @@ class CustomRolePanelView(discord.ui.View):
 
         view = RoleBuilderView(interaction.user.id, mode, existing_data)
         embed = view.build_embed()
-        # Send the builder as an ephemeral message
         await safe_respond(interaction, embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
