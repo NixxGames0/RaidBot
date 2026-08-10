@@ -28,7 +28,6 @@ async def init_afk_db():
 
 # ─── Helper functions ──────────────────────────────────────
 async def get_afk(user_id: int):
-    """Return AFK data for a user, or None if not AFK."""
     result = await d1_query(
         "SELECT note, start_time, original_nick FROM afk WHERE user_id = ?",
         [str(user_id)]
@@ -44,7 +43,6 @@ async def get_afk(user_id: int):
 
 
 async def set_afk(user_id: int, note: str, original_nick: str = None):
-    """Set a user as AFK."""
     now = datetime.now(timezone.utc).isoformat()
     await d1_query(
         "INSERT OR REPLACE INTO afk (user_id, note, start_time, original_nick) VALUES (?, ?, ?, ?)",
@@ -53,7 +51,6 @@ async def set_afk(user_id: int, note: str, original_nick: str = None):
 
 
 async def remove_afk(user_id: int):
-    """Remove a user from AFK and return their data."""
     result = await d1_query(
         "SELECT note, start_time, original_nick FROM afk WHERE user_id = ?",
         [str(user_id)]
@@ -70,7 +67,6 @@ async def remove_afk(user_id: int):
 
 
 def format_duration(seconds: int) -> str:
-    """Format seconds into a human-readable duration."""
     days = seconds // 86400
     hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
@@ -106,16 +102,12 @@ class AFK(commands.Cog):
     @app_commands.describe(note="Optional note to show when someone pings you")
     @app_commands.checks.cooldown(1, 5)
     async def afk(self, interaction: discord.Interaction, note: str = None):
-        """Set AFK status."""
         user = interaction.user
         guild = interaction.guild
 
-        # Get current AFK status
         afk_data = await get_afk(user.id)
         if afk_data:
-            # Already AFK – update note and reset timer
             await set_afk(user.id, note or "", afk_data["original_nick"])
-            # Re-apply nickname (in case it was changed manually)
             await self._set_afk_nickname(user, afk_data["original_nick"])
             await interaction.response.send_message(
                 f"✅ Updated your AFK status. You are still marked as AFK.",
@@ -123,13 +115,8 @@ class AFK(commands.Cog):
             )
             return
 
-        # Store original nickname (or None)
         original_nick = user.nick
-
-        # Set AFK in DB
         await set_afk(user.id, note or "", original_nick)
-
-        # Change nickname
         await self._set_afk_nickname(user, original_nick)
 
         embed = discord.Embed(
@@ -141,7 +128,6 @@ class AFK(commands.Cog):
         embed.set_footer(text="Type a message to return.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        # Log
         log_embed = discord.Embed(
             title="🔇 AFK Set",
             color=discord.Color.orange(),
@@ -152,18 +138,14 @@ class AFK(commands.Cog):
         await send_log(self.bot, log_embed)
 
     async def _set_afk_nickname(self, member: discord.Member, original_nick: str = None):
-        """Set the member's nickname to [AFK] + original name, respecting Discord's 32‑char limit."""
         if not member.guild.me.guild_permissions.manage_nicknames:
             return
-
         display_name = original_nick or member.display_name
         prefix = "[AFK] "
         max_len = 32
-        # Truncate the display name to fit within 32 chars
         available = max_len - len(prefix)
         if len(display_name) > available:
             display_name = display_name[:available]
-
         new_nick = prefix + display_name
         try:
             await member.edit(nick=new_nick, reason="AFK status")
@@ -171,7 +153,6 @@ class AFK(commands.Cog):
             logger.warning(f"Failed to set AFK nickname for {member}: {e}")
 
     async def _restore_nickname(self, member: discord.Member, original_nick: str = None):
-        """Restore the member's original nickname."""
         if not member.guild.me.guild_permissions.manage_nicknames:
             return
         try:
@@ -182,7 +163,6 @@ class AFK(commands.Cog):
     @app_commands.command(name="afklist", description="List all users currently AFK")
     @app_commands.checks.cooldown(1, 10)
     async def afklist(self, interaction: discord.Interaction):
-        """Show all AFK users."""
         result = await d1_query(
             "SELECT user_id, note, start_time FROM afk ORDER BY start_time"
         )
@@ -219,12 +199,9 @@ class AFK(commands.Cog):
         # ── Remove AFK if the author sends a message ──
         afk_data = await remove_afk(message.author.id)
         if afk_data:
-            # Restore nickname
             await self._restore_nickname(message.author, afk_data["original_nick"])
-            # Calculate duration
             duration_seconds = int((datetime.now(timezone.utc) - afk_data["start_time"]).total_seconds())
             duration_str = format_duration(duration_seconds)
-            # Send welcome back message
             embed = discord.Embed(
                 title="👋 Welcome Back!",
                 description=f"{message.author.mention} was AFK for **{duration_str}**.",
@@ -235,7 +212,6 @@ class AFK(commands.Cog):
                 embed.add_field(name="Note", value=afk_data["note"], inline=False)
             await message.channel.send(embed=embed)
 
-            # Log
             log_embed = discord.Embed(
                 title="🔊 AFK Removed",
                 color=discord.Color.green(),
@@ -247,13 +223,11 @@ class AFK(commands.Cog):
 
         # ── Reply to pings of AFK users ──
         if message.mentions:
-            # Avoid replying to our own messages, and avoid replying to the same user too often
             now = datetime.now(timezone.utc).timestamp()
             for mentioned in message.mentions:
                 if mentioned.id == message.author.id or mentioned.bot:
                     continue
-                # Rate limit per mentioned user (once per 30 seconds)
-                key = (mentioned.id, message.channel.id)  # per user per channel
+                key = (mentioned.id, message.channel.id)
                 last = afk_reply_cooldown.get(key, 0)
                 if now - last < 30:
                     continue
