@@ -1303,7 +1303,6 @@ class RaidSetupView(discord.ui.View):
             timestamp=datetime.now(timezone.utc)
         )
         embed.description = f"{self.host_mention} has started raid setup!"
-        embed.add_field(name="Code", value=f"`{self.code}`", inline=False)
         embed.add_field(name="Status", value="⏳ PENDING...", inline=True)
         
         hoster_lines = []
@@ -1404,7 +1403,6 @@ class RaidSetupView(discord.ui.View):
             timestamp=datetime.now(timezone.utc)
         )
         embed.description = f"{self.host_mention} has started raid setup!"
-        embed.add_field(name="Code", value=f"`{self.code}`", inline=False)
         embed.add_field(name="Status", value="✅ CONFIRMED!", inline=True)
         
         hoster_lines = []
@@ -1458,13 +1456,27 @@ class RaidSetupView(discord.ui.View):
             )
             ctrl_embed.add_field(name="Raid ID", value=f"`{raid_id}`", inline=True)
             ctrl_embed.add_field(name="Host", value=f"<@{self.host_id}>", inline=True)
-            ctrl_embed.add_field(name="Code", value=f"`{self.code}`", inline=True)
             ctrl_embed.add_field(name="Wave", value="1/20", inline=True)
             ctrl_embed.add_field(name="Auto-Timeout", value=f"{RAID_TIMEOUT_MINUTES} minutes", inline=True)
             ctrl_msg = await host_ch.send(embed=ctrl_embed, view=RaidControlView())
             raid["control_msg_id"] = ctrl_msg.id
 
         schedule_raid_timeout(guild_id, interaction.client)
+
+        # DM the host their code privately
+        try:
+            host_member = interaction.guild.get_member(self.host_id)
+            if host_member:
+                code_embed = discord.Embed(
+                    title="⚔️ Your Raid Code",
+                    description=f"### `{self.code}`",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                code_embed.add_field(name="​", value="Keep this private! Share it only with your co-hosters.", inline=False)
+                await host_member.send(embed=code_embed)
+        except Exception as e:
+            print(f"Could not DM host their code: {e}")
 
         log_embed = discord.Embed(
             title="⚔️ Raid Started",
@@ -1512,7 +1524,6 @@ class RaidSetupView(discord.ui.View):
             timestamp=datetime.now(timezone.utc)
         )
         new_embed.description = f"{self.host_mention} has started raid setup!"
-        new_embed.add_field(name="Code", value=f"`{self.code}`", inline=False)
         new_embed.add_field(name="Status", value="❌ CANCELLED", inline=True)
         
         hoster_lines = []
@@ -1585,6 +1596,10 @@ class RaidControlView(discord.ui.View):
     )
     async def update_wave(self, interaction: discord.Interaction, button: discord.ui.Button):
         raid = get_raid(interaction.guild_id)
+        if not raid:
+            raid = await get_active_raid_from_db(interaction.guild_id)
+            if raid:
+                raids[interaction.guild_id] = raid
         if not raid or interaction.user.id not in raid["hosters"]:
             return await interaction.response.send_message(
                 "❌ Only hosters can update the wave.",
@@ -1600,6 +1615,12 @@ class RaidControlView(discord.ui.View):
     )
     async def end_raid_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         raid = get_raid(interaction.guild_id)
+        if not raid:
+            # Bot may have restarted — fall back to DB
+            raid = await get_active_raid_from_db(interaction.guild_id)
+            if raid:
+                # Restore into memory so the rest of the end flow works
+                raids[interaction.guild_id] = raid
         if not raid or interaction.user.id not in raid["hosters"]:
             return await interaction.response.send_message(
                 "❌ Only hosters can end the raid.",
@@ -1652,9 +1673,25 @@ class HosterInviteView(discord.ui.View):
 
         self.stop()
         await interaction.response.send_message(
-            "✅ You have joined the raid as a co-hoster!",
+            "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
             ephemeral=True
         )
+
+        # DM the co-hoster the code if the raid is already active
+        try:
+            raid = raids.get(self.guild_id)
+            invitee = interaction.client.get_user(self.invitee_id)
+            if invitee and raid and raid.get("code"):
+                code_embed = discord.Embed(
+                    title="⚔️ Raid Code",
+                    description=f"### `{raid['code']}`",
+                    color=discord.Color.green(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                code_embed.add_field(name="​", value="You've been accepted as a co-hoster! Keep this code private.", inline=False)
+                await invitee.send(embed=code_embed)
+        except Exception as e:
+            print(f"Could not DM co-hoster code: {e}")
 
         try:
             host = interaction.client.get_user(self.host_id)
