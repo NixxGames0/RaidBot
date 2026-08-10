@@ -100,42 +100,28 @@ async def ensure_db():
             """CREATE TABLE IF NOT EXISTS custom_roles (
                 user_id TEXT PRIMARY KEY,
                 role_id TEXT NOT NULL,
-                emoji_id TEXT,
                 created_at TEXT NOT NULL
             )"""
         )
-        await d1_query("ALTER TABLE custom_roles ADD COLUMN emoji_id TEXT")
     except Exception:
         pass
 
 
 async def get_custom_role(user_id: int):
     result = await d1_query(
-        "SELECT role_id, emoji_id FROM custom_roles WHERE user_id = ?",
+        "SELECT role_id FROM custom_roles WHERE user_id = ?",
         [str(user_id)]
     )
     if result["results"]:
-        row = result["results"][0]
-        return {
-            "role_id": int(row["role_id"]),
-            "emoji_id": int(row["emoji_id"]) if row["emoji_id"] else None
-        }
+        return int(result["results"][0]["role_id"])
     return None
 
 
-async def create_custom_role_entry(user_id: int, role_id: int, emoji_id: int = None):
+async def create_custom_role_entry(user_id: int, role_id: int):
     now = datetime.now(timezone.utc).isoformat()
     await d1_query(
-        """INSERT INTO custom_roles (user_id, role_id, emoji_id, created_at)
-           VALUES (?, ?, ?, ?)""",
-        [str(user_id), str(role_id), str(emoji_id) if emoji_id else None, now]
-    )
-
-
-async def update_custom_role_emoji(user_id: int, emoji_id: int):
-    await d1_query(
-        "UPDATE custom_roles SET emoji_id = ? WHERE user_id = ?",
-        [str(emoji_id), str(user_id)]
+        "INSERT INTO custom_roles (user_id, role_id, created_at) VALUES (?, ?, ?)",
+        [str(user_id), str(role_id), now]
     )
 
 
@@ -190,7 +176,6 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
             reason=f"Generated emoji for role colour #{color.value:06x}"
         )
         logger.info(f"✅ Uploaded emoji '{emoji_name}' for colour #{color.value:06x}")
-
         if role_id and role_id in ROLE_ICON_MAP.values():
             await store_emoji_id(basename, emoji.id)
         return emoji
@@ -232,61 +217,6 @@ async def safe_respond(interaction, *args, **kwargs):
         pass
 
 
-# ─── Icon Selection View ──────────────────────────────────
-class IconSelectView(discord.ui.View):
-    def __init__(self, builder_view: 'RoleBuilderView', timeout: float = 120.0):
-        super().__init__(timeout=timeout)
-        self.builder_view = builder_view
-        self.add_item(self._create_select())
-
-    def _create_select(self) -> discord.ui.Select:
-        options = []
-        for name in sorted(AVAILABLE_ICONS.keys()):
-            options.append(
-                discord.SelectOption(
-                    label=name,
-                    value=name,
-                    description=f"Use icon '{name}'",
-                )
-            )
-        # Add a "None" option to clear icon
-        options.append(
-            discord.SelectOption(
-                label="None",
-                value="none",
-                description="Remove the current icon",
-            )
-        )
-        return discord.ui.Select(
-            placeholder="Choose an icon for your role...",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only the user who opened the builder can use this
-        return interaction.user.id == self.builder_view.user_id
-
-    @discord.ui.select(
-        placeholder="Choose an icon...",
-        min_values=1,
-        max_values=1,
-        options=[],
-    )
-    async def icon_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        selected = select.values[0]
-        if selected == "none":
-            self.builder_view.data["icon"] = None
-        else:
-            self.builder_view.data["icon"] = selected
-        # Refresh the builder embed
-        await self.builder_view.update_embed(interaction)
-        # Delete this icon selection message
-        await interaction.message.delete()
-        self.stop()
-
-
 # ─── Role Builder Views ────────────────────────────────────
 class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
@@ -296,19 +226,19 @@ class RoleBuilderView(discord.ui.View):
         self.data = {
             "name": "",
             "color": discord.Color.blurple(),
-            "icon": None,  # icon name or None
         }
         if existing_data:
             self.data["name"] = existing_data.get("name", "")
             self.data["color"] = existing_data.get("color", discord.Color.blurple())
-            self.data["icon"] = existing_data.get("icon", None)
 
     def build_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="🎨 Custom Role Builder",
             description=(
                 "**Mode:** " + ("Creating" if self.mode == "create" else "Editing") + " your custom role.\n"
-                "Use the buttons below to change each field, then click **Apply Changes** to save."
+                "Use the buttons below to change each field, then click **Apply Changes** to save.\n\n"
+                "**Note:** Role icons are not available until the server reaches Level 2.\n"
+                "A gradient emoji will be generated for your role and stored for future use."
             ),
             color=self.data["color"],
             timestamp=datetime.now(timezone.utc)
@@ -321,11 +251,6 @@ class RoleBuilderView(discord.ui.View):
         embed.add_field(
             name="Color",
             value=f"`#{self.data['color'].value:06x}`",
-            inline=True
-        )
-        embed.add_field(
-            name="Icon",
-            value=self.data["icon"] or "*(none)*",
             inline=True
         )
         embed.set_footer(text="Changes are not applied until you click 'Apply'.")
@@ -343,17 +268,6 @@ class RoleBuilderView(discord.ui.View):
     async def change_color(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ColorModal(self))
 
-    @discord.ui.button(label="Change Icon", style=discord.ButtonStyle.primary)
-    async def change_icon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Send a followup ephemeral with the icon dropdown
-        view = IconSelectView(self)
-        embed = discord.Embed(
-            title="Choose an Icon",
-            description="Select an icon from the dropdown below to set as your role's icon.",
-            color=discord.Color.blurple()
-        )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
     @discord.ui.button(label="Apply Changes", style=discord.ButtonStyle.success)
     async def apply_changes(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Validate data
@@ -363,26 +277,12 @@ class RoleBuilderView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        # Handle icon
-        emoji = None
-        if self.data["icon"]:
-            if self.data["icon"] not in AVAILABLE_ICONS:
-                return await interaction.followup.send(
-                    f"❌ Icon '{self.data['icon']}' not found. Available: {', '.join(AVAILABLE_ICONS.keys())}",
-                    ephemeral=True
-                )
-            try:
-                emoji = await ensure_role_emoji(guild, self.data["icon"], self.data["color"])
-            except Exception as e:
-                return await interaction.followup.send(f"❌ Failed to upload icon: {e}", ephemeral=True)
-
         if self.mode == "create":
             # Create the role
             try:
                 role = await guild.create_role(
                     name=self.data["name"],
                     color=self.data["color"],
-                    icon=emoji,
                     reason=f"Custom role created by {interaction.user}"
                 )
             except Exception as e:
@@ -400,7 +300,7 @@ class RoleBuilderView(discord.ui.View):
                     pass
 
             await interaction.user.add_roles(role)
-            await create_custom_role_entry(interaction.user.id, role.id, emoji.id if emoji else None)
+            await create_custom_role_entry(interaction.user.id, role.id)
 
             embed = discord.Embed(
                 title="✅ Custom Role Created",
@@ -410,8 +310,6 @@ class RoleBuilderView(discord.ui.View):
             embed.add_field(name="Role", value=role.mention, inline=True)
             embed.add_field(name="Name", value=self.data["name"], inline=True)
             embed.add_field(name="Color", value=f"#{self.data['color'].value:06x}", inline=True)
-            if emoji:
-                embed.add_field(name="Icon", value=str(emoji), inline=True)
             await send_log(interaction.client, embed)
 
             # Disable buttons
@@ -428,19 +326,15 @@ class RoleBuilderView(discord.ui.View):
             existing = await get_custom_role(interaction.user.id)
             if not existing:
                 return await interaction.followup.send("❌ No custom role found to edit.", ephemeral=True)
-            role = guild.get_role(existing["role_id"])
+            role = guild.get_role(existing)
             if not role:
                 return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
 
             # Update the role
             try:
-                await role.edit(name=self.data["name"], color=self.data["color"], icon=emoji)
+                await role.edit(name=self.data["name"], color=self.data["color"])
             except Exception as e:
                 return await interaction.followup.send(f"❌ Failed to update role: {e}", ephemeral=True)
-
-            # Update emoji in DB if changed
-            if emoji:
-                await update_custom_role_emoji(interaction.user.id, emoji.id)
 
             embed = discord.Embed(
                 title="✏️ Custom Role Updated",
@@ -450,8 +344,6 @@ class RoleBuilderView(discord.ui.View):
             embed.add_field(name="Role", value=role.mention, inline=True)
             embed.add_field(name="New Name", value=self.data["name"], inline=True)
             embed.add_field(name="New Color", value=f"#{self.data['color'].value:06x}", inline=True)
-            if emoji:
-                embed.add_field(name="New Icon", value=str(emoji), inline=True)
             await send_log(interaction.client, embed)
 
             # Disable buttons
@@ -467,7 +359,6 @@ class RoleBuilderView(discord.ui.View):
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("❌ Role builder cancelled.", ephemeral=True)
-        # Disable all buttons
         for child in self.children:
             child.disabled = True
         await interaction.message.edit(view=self)
@@ -530,19 +421,13 @@ class CustomRolePanelView(discord.ui.View):
         existing = await get_custom_role(interaction.user.id)
         mode = "edit" if existing else "create"
 
-        # If editing, get the current role data
         if existing:
-            role = interaction.guild.get_role(existing["role_id"])
+            role = interaction.guild.get_role(existing)
             if not role:
                 return await interaction.response.send_message("❌ Your custom role no longer exists.", ephemeral=True)
-            # Get icon name from the emoji name (if any)
-            icon_name = None
-            if role.icon and role.icon.name and role.icon.name.startswith("role_"):
-                icon_name = role.icon.name[5:]  # remove "role_"
             existing_data = {
                 "name": role.name,
                 "color": role.color,
-                "icon": icon_name
             }
         else:
             existing_data = None
@@ -558,7 +443,7 @@ class CustomRolePanelView(discord.ui.View):
         existing = await get_custom_role(interaction.user.id)
         if not existing:
             return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
-        role = interaction.guild.get_role(existing["role_id"])
+        role = interaction.guild.get_role(existing)
         if not role:
             return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
@@ -573,12 +458,6 @@ class CustomRolePanelView(discord.ui.View):
             value=f"`#{role.color.value:06x}`",
             inline=False
         )
-        if role.icon:
-            embed.add_field(
-                name="Icon",
-                value=str(role.icon),
-                inline=False
-            )
         embed.set_footer(text="This is how your role will appear.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -589,11 +468,11 @@ class CustomRolePanelView(discord.ui.View):
         existing = await get_custom_role(interaction.user.id)
         if not existing:
             return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
-        role = interaction.guild.get_role(existing["role_id"])
+        role = interaction.guild.get_role(existing)
         if not role:
             return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
-        confirm_view = ConfirmDeleteView(role.id, interaction.user.id, existing["emoji_id"])
+        confirm_view = ConfirmDeleteView(role.id, interaction.user.id)
         await interaction.response.send_message(
             "⚠️ Are you sure you want to delete your custom role? This action cannot be undone.",
             view=confirm_view,
@@ -601,13 +480,11 @@ class CustomRolePanelView(discord.ui.View):
         )
 
 
-# ─── Confirm Delete View ──────────────────────────────────
 class ConfirmDeleteView(discord.ui.View):
-    def __init__(self, role_id: int, user_id: int, emoji_id: int = None):
+    def __init__(self, role_id: int, user_id: int):
         super().__init__(timeout=60)
         self.role_id = role_id
         self.user_id = user_id
-        self.emoji_id = emoji_id
 
     @discord.ui.button(label="Yes, delete", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -618,14 +495,6 @@ class ConfirmDeleteView(discord.ui.View):
         role = interaction.guild.get_role(self.role_id)
         if role:
             await role.delete(reason=f"Custom role deleted by {interaction.user}")
-
-        if self.emoji_id:
-            emoji = discord.utils.get(interaction.guild.emojis, id=self.emoji_id)
-            if emoji:
-                try:
-                    await emoji.delete(reason="Custom role deleted")
-                except:
-                    pass
 
         await delete_custom_role_entry(self.user_id)
 
@@ -664,15 +533,15 @@ def build_custom_role_panel():
         name="Instructions",
         value=(
             "🔹 **Manage Role** – create or edit your custom role.\n"
-            "   You can set a name (max 50 chars), a hex color, and an optional icon.\n"
-            "   Available icons: " + (', '.join(AVAILABLE_ICONS.keys()) or 'none') + "\n"
+            "   You can set a name (max 50 chars) and a hex color.\n"
             "👁️ **Preview** – see how your role currently looks.\n"
             "🗑️ **Delete** – remove your role.\n\n"
-            "🔹 **Gradient emojis** are automatically generated from your chosen colour."
+            "🔹 **Gradient emojis** for built‑in roles are automatically generated.\n"
+            "🔹 **Role icons** will be available when the server reaches Level 2."
         ),
         inline=False
     )
-    embed.set_footer(text="Icons require server boosts (Level 2+) to display as role icons.")
+    embed.set_footer(text="Custom roles are cosmetic and do not grant permissions.")
     view = CustomRolePanelView()
     return embed, view
 
