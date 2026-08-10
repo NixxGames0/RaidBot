@@ -145,7 +145,9 @@ class BonusEntryModal(discord.ui.Modal, title="Add Bonus Entry"):
 
         self.builder_view.bonus_entries[role_id] = count
         await self.builder_view.update_embed(interaction)
-        await interaction.response.send_message(f"✅ Added {role.mention} with {count} bonus entries.", ephemeral=True)
+
+        # Use followup because the modal response already acknowledged the interaction
+        await interaction.followup.send(f"✅ Added {role.mention} with {count} bonus entries.", ephemeral=True)
 
 
 class RemoveBonusView(discord.ui.View):
@@ -402,7 +404,16 @@ class GiveawayBuilderView(discord.ui.View):
         if self.mode == "create":
             giveaway_id = generate_giveaway_id()
             self.data["giveaway_id"] = giveaway_id
+
+            # First, send the ping (mention the ping role) in the channel
+            ping_role = interaction.guild.get_role(GIVEAWAY_PING_ROLE_ID)
+            if ping_role:
+                await interaction.channel.send(f"{ping_role.mention} 🎉 New giveaway starting!")
+
+            # Then post the public embed
             await self.post_public_embed(interaction, giveaway_id)
+
+            # Now save to DB (channel_id and message_id will be updated inside post_public_embed)
             now = datetime.now(timezone.utc).isoformat()
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
@@ -422,8 +433,8 @@ class GiveawayBuilderView(discord.ui.View):
                     "active",
                     json.dumps(self.bonus_entries),
                     json.dumps([]),
-                    None,
-                    None
+                    "0",   # placeholder, will be updated
+                    "0"    # placeholder, will be updated
                 ]
             )
             await interaction.response.send_message(f"✅ Giveaway posted! ID: {giveaway_id}", ephemeral=True)
@@ -438,6 +449,7 @@ class GiveawayBuilderView(discord.ui.View):
             await log_giveaway(self.bot, embed)
             await send_log(self.bot, embed)
         else:
+            # Edit mode: update existing
             await self.update_public_embed(interaction, giveaway_id)
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
@@ -496,6 +508,7 @@ class GiveawayBuilderView(discord.ui.View):
 
         view = GiveawayPublicView(self.bot, giveaway_id)
         message = await channel.send(embed=embed, view=view)
+        # Update DB with actual channel_id and message_id
         await d1_query(
             "UPDATE giveaways SET channel_id = ?, message_id = ? WHERE giveaway_id = ?",
             [str(channel.id), str(message.id), giveaway_id]
@@ -916,11 +929,12 @@ class Giveaway(commands.Cog):
     @app_commands.command(name="giveaways", description="List all active giveaways")
     @app_commands.checks.cooldown(1, 10)
     async def giveaways(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)  # avoid timeout
         rows = await d1_query(
             "SELECT giveaway_id, name, prize, end_time, entrants FROM giveaways WHERE status = 'active' ORDER BY created_at DESC"
         )
         if not rows["results"]:
-            return await interaction.response.send_message("📭 No active giveaways at the moment.", ephemeral=True)
+            return await interaction.followup.send("📭 No active giveaways at the moment.", ephemeral=True)
 
         embed = discord.Embed(
             title="🎉 Active Giveaways",
@@ -938,7 +952,7 @@ class Giveaway(commands.Cog):
                       f"🆔 ID: {row['giveaway_id']}",
                 inline=False
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="endgiveaway", description="Force end a giveaway (Head Staff+ only)")
     @app_commands.describe(giveaway_id="The giveaway ID to end")
