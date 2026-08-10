@@ -25,6 +25,7 @@ GIVEAWAY_HOST_ROLE_ID = 1536325001584578621
 GIVEAWAY_PING_ROLE_ID = 1536324869422063626
 GIVEAWAY_LOG_CHANNEL_ID = 1536329270354378783
 TICKET_CATEGORY_ID = 1535905899854430222
+DEFAULT_WINNERS = 1
 
 # ─── Database setup ─────────────────────────────────────────
 async def init_giveaway_db():
@@ -46,7 +47,8 @@ async def init_giveaway_db():
             bonus_entries TEXT,
             entrants TEXT DEFAULT '[]',
             status TEXT DEFAULT 'active',
-            last_reroll TEXT
+            last_reroll TEXT,
+            winners_count INTEGER DEFAULT 1
         )"""
     )
     await d1_query(
@@ -63,6 +65,7 @@ async def init_giveaway_db():
     for col_sql in [
         "ALTER TABLE giveaways ADD COLUMN required_role_id TEXT",
         "ALTER TABLE giveaways ADD COLUMN last_reroll TEXT",
+        "ALTER TABLE giveaways ADD COLUMN winners_count INTEGER DEFAULT 1",
     ]:
         try:
             await d1_query(col_sql)
@@ -205,7 +208,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     winner_name = winner.display_name if winner else str(winner_id)
     channel_name = f"giveaway-{winner_name[:10]}-{giveaway_data['giveaway_id'][-4:]}".lower().replace(" ", "-")
 
-    # Build permission overrides
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -223,7 +225,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     if host_role:
         overwrites[host_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    # Create the channel
     try:
         if category:
             channel = await guild.create_text_channel(
@@ -233,7 +234,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
                 reason=f"Giveaway ticket for {giveaway_data['giveaway_id']}"
             )
         else:
-            # Fallback: create without category
             channel = await guild.create_text_channel(
                 name=channel_name,
                 overwrites=overwrites,
@@ -242,7 +242,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         print(f"✅ Created ticket channel {channel.name} ({channel.id})")
     except Exception as e:
         print(f"❌ Failed to create ticket channel: {e}")
-        # Send a message in the original giveaway channel about the failure
         original_channel = guild.get_channel(int(giveaway_data["channel_id"]))
         if original_channel:
             await original_channel.send(
@@ -250,7 +249,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
             )
         return
 
-    # Store ticket in DB
     now = datetime.now(timezone.utc).isoformat()
     try:
         await d1_query(
@@ -265,7 +263,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
             pass
         return
 
-    # Send the panel embed with the view
     embed = discord.Embed(
         title="🎉 Giveaway Ticket",
         description=f"**Giveaway:** {giveaway_data['name']}\n"
@@ -287,7 +284,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     )
     await channel.send(embed=embed, view=view)
 
-    # Notify participants
     mention_parts = []
     if host:
         mention_parts.append(host.mention)
@@ -437,6 +433,7 @@ class GiveawayBuilderView(discord.ui.View):
             "required_role_id": VERIFIED_ROLE_ID,
             "bonus_entries": {},
             "giveaway_id": None,
+            "winners": DEFAULT_WINNERS,
         }
         if giveaway_data:
             self.data.update(giveaway_data)
@@ -475,6 +472,11 @@ class GiveawayBuilderView(discord.ui.View):
         embed.add_field(
             name="Required Role",
             value=required_role_mention,
+            inline=True
+        )
+        embed.add_field(
+            name="Winners",
+            value=str(self.data["winners"]),
             inline=True
         )
         bonus_text = ""
@@ -577,6 +579,30 @@ class GiveawayBuilderView(discord.ui.View):
         await self.update_embed(interaction)
         await interaction.response.edit_message(content="✅ Required role updated.", view=None)
 
+    @discord.ui.button(label="Change Winners", style=discord.ButtonStyle.primary)
+    async def change_winners(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
+        modal = discord.ui.Modal(title="Number of Winners")
+        modal.add_item(discord.ui.TextInput(
+            label="Winners Count",
+            placeholder="Enter number of winners (1-10)",
+            max_length=2,
+            required=True,
+            default=str(self.data["winners"])
+        ))
+        async def on_submit(interaction: discord.Interaction):
+            try:
+                val = int(interaction.children[0].value)
+                if val < 1 or val > 10:
+                    raise ValueError
+                self.data["winners"] = val
+                await self.update_embed(interaction)
+            except:
+                await interaction.response.send_message("❌ Invalid number. Please enter 1-10.", ephemeral=True)
+        modal.on_submit = on_submit
+        await interaction.response.send_modal(modal)
+
     @discord.ui.button(label="Add Bonus Entry", style=discord.ButtonStyle.primary)
     async def add_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._check_user(interaction):
@@ -608,7 +634,8 @@ class GiveawayBuilderView(discord.ui.View):
                         f"**Host:** <@{self.user_id}>\n"
                         f"**Required Role:** {required_role.mention if required_role else 'None'}\n"
                         f"**Ends:** <t:{int((datetime.now(timezone.utc) + timedelta(seconds=self.data['duration'])).timestamp())}:R>\n"
-                        f"**Entrants:** 0",
+                        f"**Entrants:** 0\n"
+                        f"**Winners:** {self.data['winners']}",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
@@ -634,6 +661,8 @@ class GiveawayBuilderView(discord.ui.View):
             return await interaction.response.send_message("❌ Please set a prize.", ephemeral=True)
         if not self.data["duration"]:
             return await interaction.response.send_message("❌ Please set a duration.", ephemeral=True)
+        if self.data["winners"] < 1 or self.data["winners"] > 10:
+            return await interaction.response.send_message("❌ Winners count must be between 1 and 10.", ephemeral=True)
 
         giveaway_id = self.data.get("giveaway_id")
         if self.mode == "create":
@@ -651,8 +680,8 @@ class GiveawayBuilderView(discord.ui.View):
             await d1_query(
                 """INSERT INTO giveaways
                 (giveaway_id, name, sponsor, prize, host_id, required_role_id, created_at, end_time,
-                 status, bonus_entries, entrants, channel_id, message_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 status, bonus_entries, entrants, channel_id, message_id, winners_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     giveaway_id,
                     self.data["name"],
@@ -666,7 +695,8 @@ class GiveawayBuilderView(discord.ui.View):
                     json.dumps(self.bonus_entries),
                     json.dumps([]),
                     "0",
-                    "0"
+                    "0",
+                    self.data["winners"]
                 ]
             )
             await interaction.response.send_message(f"✅ Giveaway posted! ID: {giveaway_id}", ephemeral=True)
@@ -678,15 +708,17 @@ class GiveawayBuilderView(discord.ui.View):
             embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
             embed.add_field(name="Name", value=self.data["name"], inline=True)
             embed.add_field(name="Host", value=f"<@{self.user_id}>", inline=True)
+            embed.add_field(name="Winners", value=str(self.data["winners"]), inline=True)
             await log_giveaway(self.bot, embed)
             await send_log(self.bot, embed)
         else:
+            # Edit mode
             await self.update_public_embed(interaction, giveaway_id)
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
                 """UPDATE giveaways SET
                     name = ?, sponsor = ?, prize = ?, required_role_id = ?,
-                    end_time = ?, bonus_entries = ?
+                    end_time = ?, bonus_entries = ?, winners_count = ?
                     WHERE giveaway_id = ?""",
                 [
                     self.data["name"],
@@ -695,6 +727,7 @@ class GiveawayBuilderView(discord.ui.View):
                     str(self.data["required_role_id"]),
                     end_time,
                     json.dumps(self.bonus_entries),
+                    self.data["winners"],
                     giveaway_id
                 ]
             )
@@ -723,7 +756,8 @@ class GiveawayBuilderView(discord.ui.View):
                         f"**Host:** <@{self.user_id}>\n"
                         f"**Required Role:** {required_role.mention if required_role else 'None'}\n"
                         f"**Ends:** <t:{end_timestamp}:R> (<t:{end_timestamp}:F>)\n"
-                        f"**Entrants:** 0",
+                        f"**Entrants:** 0\n"
+                        f"**Winners:** {self.data['winners']}",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
@@ -763,8 +797,9 @@ class GiveawayBuilderView(discord.ui.View):
 
         required_role = interaction.guild.get_role(self.data["required_role_id"]) if self.data["required_role_id"] else None
         end_timestamp = int((datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).timestamp())
-        row2 = await d1_query("SELECT entrants FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
+        row2 = await d1_query("SELECT entrants, winners_count FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
         entrants = json.loads(row2["results"][0]["entrants"]) if row2["results"] else []
+        winners_count = row2["results"][0]["winners_count"] if row2["results"] else DEFAULT_WINNERS
 
         embed = discord.Embed(
             title=f"🎉 {self.data['name']}",
@@ -773,7 +808,8 @@ class GiveawayBuilderView(discord.ui.View):
                         f"**Host:** <@{self.user_id}>\n"
                         f"**Required Role:** {required_role.mention if required_role else 'None'}\n"
                         f"**Ends:** <t:{end_timestamp}:R> (<t:{end_timestamp}:F>)\n"
-                        f"**Entrants:** {len(entrants)}",
+                        f"**Entrants:** {len(entrants)}\n"
+                        f"**Winners:** {winners_count}",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
@@ -887,7 +923,7 @@ class GiveawayPublicView(discord.ui.View):
     @discord.ui.button(label="🎁 Join Giveaway", style=discord.ButtonStyle.success, custom_id="join_giveaway")
     async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
         row = await d1_query(
-            "SELECT required_role_id, entrants, status, host_id, giveaway_id FROM giveaways WHERE giveaway_id = ?",
+            "SELECT required_role_id, entrants, status, host_id, giveaway_id, winners_count FROM giveaways WHERE giveaway_id = ?",
             [self.giveaway_id]
         )
         if not row["results"]:
@@ -927,7 +963,7 @@ class GiveawayPublicView(discord.ui.View):
 
     async def update_embed(self, interaction: discord.Interaction):
         row = await d1_query(
-            "SELECT name, sponsor, prize, host_id, required_role_id, end_time, entrants, bonus_entries FROM giveaways WHERE giveaway_id = ?",
+            "SELECT name, sponsor, prize, host_id, required_role_id, end_time, entrants, bonus_entries, winners_count FROM giveaways WHERE giveaway_id = ?",
             [self.giveaway_id]
         )
         if not row["results"]:
@@ -945,7 +981,8 @@ class GiveawayPublicView(discord.ui.View):
                         f"**Host:** <@{data['host_id']}>\n"
                         f"**Required Role:** {required_role.mention if required_role else 'None'}\n"
                         f"**Ends:** <t:{int(end_time.timestamp())}:R> (<t:{int(end_time.timestamp())}:F>)\n"
-                        f"**Entrants:** {len(entrants)}",
+                        f"**Entrants:** {len(entrants)}\n"
+                        f"**Winners:** {data['winners_count'] or 1}",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
@@ -993,6 +1030,34 @@ class Giveaway(commands.Cog):
         for row in rows["results"]:
             await self.end_giveaway(row["giveaway_id"], auto=True)
 
+    async def pick_winners(self, entrants: list, bonus_entries: dict, winners_count: int, exclude: list = None):
+        if exclude is None:
+            exclude = []
+        available = [uid for uid in entrants if uid not in exclude]
+        if not available:
+            return []
+        weights = []
+        for user_id in available:
+            weight = 1
+            for role_id, count in bonus_entries.items():
+                role = discord.utils.get(self.bot.get_guild(GUILD_ID).roles, id=int(role_id))
+                if role:
+                    member = self.bot.get_guild(GUILD_ID).get_member(int(user_id))
+                    if member and role in member.roles:
+                        weight += count
+            weights.append(weight)
+        # Pick up to winners_count unique winners
+        winners = []
+        temp_available = available.copy()
+        temp_weights = weights.copy()
+        for _ in range(min(winners_count, len(temp_available))):
+            idx = random.choices(range(len(temp_available)), weights=temp_weights, k=1)[0]
+            winners.append(int(temp_available[idx]))
+            # Remove selected from available
+            temp_available.pop(idx)
+            temp_weights.pop(idx)
+        return winners
+
     async def end_giveaway(self, giveaway_id: str, auto: bool = False, early: bool = False, interaction: discord.Interaction = None):
         row = await d1_query(
             "SELECT * FROM giveaways WHERE giveaway_id = ?",
@@ -1005,84 +1070,88 @@ class Giveaway(commands.Cog):
             return
 
         entrants = json.loads(data["entrants"])
+        winners_count = int(data.get("winners_count") or 1)
+        bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
+
         if not entrants:
             await d1_query("UPDATE giveaways SET status = 'cancelled' WHERE giveaway_id = ?", [giveaway_id])
             await self.update_giveaway_embed(giveaway_id, cancelled=True)
             return
 
-        # Weighted selection
-        weights = []
-        for user_id in entrants:
-            weight = 1
-            bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
-            for role_id, count in bonus_entries.items():
-                role = discord.utils.get(self.bot.get_guild(GUILD_ID).roles, id=int(role_id))
-                if role:
-                    member = self.bot.get_guild(GUILD_ID).get_member(int(user_id))
-                    if member and role in member.roles:
-                        weight += count
-            weights.append(weight)
-
-        winner_id = int(random.choices(entrants, weights=weights, k=1)[0])
-        winner = self.bot.get_guild(GUILD_ID).get_member(winner_id)
-        winner_mention = winner.mention if winner else f"<@{winner_id}>"
+        # Pick winners
+        winners = await self.pick_winners(entrants, bonus_entries, winners_count)
+        if not winners:
+            await d1_query("UPDATE giveaways SET status = 'cancelled' WHERE giveaway_id = ?", [giveaway_id])
+            await self.update_giveaway_embed(giveaway_id, cancelled=True)
+            return
 
         await d1_query(
             "UPDATE giveaways SET status = 'ended', winner_ids = ? WHERE giveaway_id = ?",
-            [json.dumps([winner_id]), giveaway_id]
+            [json.dumps(winners), giveaway_id]
         )
 
-        await self.update_giveaway_embed(giveaway_id, winner_id=winner_id, early=early)
+        await self.update_giveaway_embed(giveaway_id, winners=winners, early=early)
 
-        # ─── Announce end in the original channel ──────────────────────────
+        # Announce in channel
         channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel:
-            await channel.send(f"🎉 **The giveaway has ended!**\n"
-                               f"**Winner:** {winner_mention}\n"
-                               f"**Prize:** {data['prize']}\n"
-                               f"Please check your DMs for a ticket to claim your prize.")
-
-        # ─── Create ticket ──────────────────────────────────────────────────
-        await create_giveaway_ticket(self.bot, self.bot.get_guild(GUILD_ID), data, winner_id)
-
-        # ─── DM winner ──────────────────────────────────────────────────────
-        try:
-            dm_embed = discord.Embed(
-                title="🎉 You Won the Giveaway!",
-                description=f"You won **{data['prize']}** in the giveaway **{data['name']}**!",
-                color=discord.Color.gold(),
+            winner_mentions = ", ".join([f"<@{w}>" for w in winners])
+            embed = discord.Embed(
+                title="🏆 Giveaway Ended!",
+                description=f"**Giveaway:** {data['name']}\n"
+                            f"**Prize:** {data['prize']}\n"
+                            f"**Winner(s):** {winner_mentions}\n"
+                            f"**Total Entrants:** {len(entrants)}\n"
+                            f"**Ended:** {'Early' if early else 'Automatically'}",
+                color=discord.Color.gold() if not early else discord.Color.orange(),
                 timestamp=datetime.now(timezone.utc)
             )
-            dm_embed.add_field(name="Host", value=f"<@{data['host_id']}>", inline=True)
-            dm_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
-            dm_embed.add_field(name="Ticket", value="A ticket has been opened for you to claim your prize.", inline=False)
-            if winner:
-                await winner.send(embed=dm_embed)
-        except Exception as e:
-            print(f"❌ Could not DM winner: {e}")
+            await channel.send(embed=embed)
 
-        # ─── Ping ping role ─────────────────────────────────────────────────
+        # Create tickets for each winner
+        for winner_id in winners:
+            await create_giveaway_ticket(self.bot, self.bot.get_guild(GUILD_ID), data, winner_id)
+
+        # DM winners
+        for winner_id in winners:
+            winner = self.bot.get_guild(GUILD_ID).get_member(winner_id)
+            if winner:
+                try:
+                    dm_embed = discord.Embed(
+                        title="🎉 You Won the Giveaway!",
+                        description=f"You won **{data['prize']}** in the giveaway **{data['name']}**!",
+                        color=discord.Color.gold(),
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    dm_embed.add_field(name="Host", value=f"<@{data['host_id']}>", inline=True)
+                    dm_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
+                    dm_embed.add_field(name="Ticket", value="A ticket has been opened for you to claim your prize.", inline=False)
+                    await winner.send(embed=dm_embed)
+                except Exception as e:
+                    print(f"Could not DM winner {winner_id}: {e}")
+
+        # Ping ping role
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
         if channel and ping_role:
-            await channel.send(f"{ping_role.mention} 🎉 **{data['name']}** has ended!")
+            await channel.send(f"{ping_role.mention} 🎉 The giveaway has ended!")
 
-        # ─── Log ────────────────────────────────────────────────────────────
-        embed = discord.Embed(
+        # Log
+        log_embed = discord.Embed(
             title="🏁 Giveaway Ended" + (" Early" if early else ""),
             color=discord.Color.gold() if not early else discord.Color.orange(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
-        embed.add_field(name="Name", value=data["name"], inline=True)
-        embed.add_field(name="Winner", value=winner_mention, inline=True)
-        embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
-        embed.add_field(name="Ended By", value="Auto" if auto else interaction.user.mention if interaction else "Manual")
-        await log_giveaway(self.bot, embed)
-        await send_log(self.bot, embed)
+        log_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
+        log_embed.add_field(name="Name", value=data["name"], inline=True)
+        log_embed.add_field(name="Winners", value=", ".join([f"<@{w}>" for w in winners]), inline=False)
+        log_embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
+        log_embed.add_field(name="Ended By", value="Auto" if auto else interaction.user.mention if interaction else "Manual")
+        await log_giveaway(self.bot, log_embed)
+        await send_log(self.bot, log_embed)
 
-    async def update_giveaway_embed(self, giveaway_id: str, winner_id: int = None, cancelled: bool = False, early: bool = False):
+    async def update_giveaway_embed(self, giveaway_id: str, winners: list = None, cancelled: bool = False, early: bool = False):
         row = await d1_query(
-            "SELECT channel_id, message_id, name, prize, sponsor, host_id, status, entrants FROM giveaways WHERE giveaway_id = ?",
+            "SELECT channel_id, message_id, name, prize, sponsor, host_id, status, entrants, winners_count FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
@@ -1111,19 +1180,21 @@ class Giveaway(commands.Cog):
                 color=discord.Color.red(),
                 timestamp=datetime.now(timezone.utc)
             )
-        elif winner_id:
+        elif winners is not None:
+            winner_mentions = ", ".join([f"<@{w}>" for w in winners])
             embed = discord.Embed(
                 title=f"🏆 {data['name']} ({'Ended Early' if early else 'Ended'})",
                 description=f"**Prize:** {data['prize']}\n"
                             f"**Sponsor:** {data['sponsor'] or 'N/A'}\n"
                             f"**Host:** <@{data['host_id']}>\n"
                             f"**Status:** {'Ended Early' if early else 'Ended'}\n"
-                            f"**Winner:** <@{winner_id}>",
+                            f"**Winner(s):** {winner_mentions}",
                 color=discord.Color.orange() if early else discord.Color.gold(),
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
         else:
+            # Still active
             embed = discord.Embed(
                 title=f"🎉 {data['name']}",
                 description=f"**Prize:** {data['prize']}\n"
@@ -1137,7 +1208,7 @@ class Giveaway(commands.Cog):
         embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
 
         view = None
-        if winner_id or cancelled:
+        if winners is not None or cancelled:
             view = discord.ui.View(timeout=None)
         else:
             view = GiveawayPublicView(self.bot, giveaway_id)
@@ -1148,9 +1219,7 @@ class Giveaway(commands.Cog):
     @app_commands.command(name="sgiveaway", description="Start a new giveaway (Requires Giveaway Host role)")
     @app_commands.checks.cooldown(1, 10)
     async def sgiveaway(self, interaction: discord.Interaction):
-        # Defer early to avoid timeout
         await interaction.response.defer(ephemeral=True)
-
         if not any(role.id == GIVEAWAY_HOST_ROLE_ID for role in interaction.user.roles) and not is_founder(interaction.user):
             return await interaction.followup.send("❌ You need the Giveaway Host role to create giveaways.", ephemeral=True)
 
@@ -1165,7 +1234,7 @@ class Giveaway(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         row = await d1_query(
-            "SELECT host_id, name, sponsor, prize, required_role_id, bonus_entries, status FROM giveaways WHERE giveaway_id = ?",
+            "SELECT host_id, name, sponsor, prize, required_role_id, bonus_entries, status, winners_count FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
@@ -1194,6 +1263,7 @@ class Giveaway(commands.Cog):
             "bonus_entries": json.loads(data["bonus_entries"]) if data["bonus_entries"] else {},
             "duration": duration_seconds,
             "giveaway_id": giveaway_id,
+            "winners": data.get("winners_count") or DEFAULT_WINNERS,
         }
         view = GiveawayBuilderView(self.bot, interaction.user.id, mode="edit", giveaway_data=builder_data, interaction=interaction)
         embed = view.build_embed()
@@ -1231,9 +1301,7 @@ class Giveaway(commands.Cog):
     @app_commands.describe(giveaway_id="The giveaway ID to end")
     @app_commands.checks.cooldown(1, 10)
     async def endgiveaway(self, interaction: discord.Interaction, giveaway_id: str):
-        # Defer early
         await interaction.response.defer(ephemeral=True)
-
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.followup.send("❌ Only Head Staff and Founder can end giveaways.", ephemeral=True)
 
@@ -1249,14 +1317,14 @@ class Giveaway(commands.Cog):
         await self.end_giveaway(giveaway_id, auto=False, early=True, interaction=interaction)
         await interaction.followup.send(f"✅ Giveaway `{giveaway_id}` ended early.", ephemeral=True)
 
-    @app_commands.command(name="reroll", description="Reroll a winner for an ended giveaway")
-    @app_commands.describe(giveaway_id="The giveaway ID to reroll")
+    @app_commands.command(name="reroll", description="Reroll a winner for an ended giveaway (pick a new winner)")
+    @app_commands.describe(giveaway_id="The giveaway ID to reroll", user="Optional: specify a winner to replace (reroll that specific winner)")
     @app_commands.checks.cooldown(1, 10)
-    async def reroll(self, interaction: discord.Interaction, giveaway_id: str):
+    async def reroll(self, interaction: discord.Interaction, giveaway_id: str, user: discord.Member = None):
         await interaction.response.defer(ephemeral=True)
 
         row = await d1_query(
-            "SELECT host_id, status, winner_ids, entrants, bonus_entries, name, prize FROM giveaways WHERE giveaway_id = ?",
+            "SELECT host_id, status, winner_ids, entrants, bonus_entries, name, prize, winners_count FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
@@ -1279,65 +1347,102 @@ class Giveaway(commands.Cog):
                 remaining = 60 - (datetime.now(timezone.utc) - last).seconds // 60
                 return await interaction.followup.send(f"⏳ Reroll cooldown. Please wait {remaining} minutes.", ephemeral=True)
 
+        winners = json.loads(data["winner_ids"]) if data["winner_ids"] else []
         entrants = json.loads(data["entrants"])
-        if not entrants:
-            return await interaction.followup.send("❌ No entrants to reroll.", ephemeral=True)
-
-        previous_winners = json.loads(data["winner_ids"]) if data["winner_ids"] else []
-        available = [uid for uid in entrants if uid not in previous_winners]
-        if not available:
-            return await interaction.followup.send("❌ No new entrants to reroll.", ephemeral=True)
-
-        weights = []
         bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
-        for user_id in available:
-            weight = 1
-            for role_id, count in bonus_entries.items():
-                role = discord.utils.get(interaction.guild.roles, id=int(role_id))
-                if role:
-                    member = interaction.guild.get_member(int(user_id))
-                    if member and role in member.roles:
-                        weight += count
-            weights.append(weight)
 
-        new_winner_id = int(random.choices(available, weights=weights, k=1)[0])
-        winner_mention = f"<@{new_winner_id}>"
+        # If user specified, we need to reroll that specific winner
+        if user:
+            if user.id not in winners:
+                return await interaction.followup.send(f"❌ {user.mention} is not a winner of this giveaway.", ephemeral=True)
+            # Remove that user from winners
+            winners.remove(user.id)
+            # Pick a new winner from entrants excluding all current winners
+            available = [uid for uid in entrants if uid not in winners and uid != user.id]
+            if not available:
+                return await interaction.followup.send("❌ No new entrants available to reroll.", ephemeral=True)
+            # Pick one
+            weights = []
+            for uid in available:
+                weight = 1
+                for role_id, count in bonus_entries.items():
+                    role = discord.utils.get(interaction.guild.roles, id=int(role_id))
+                    if role:
+                        member = interaction.guild.get_member(int(uid))
+                        if member and role in member.roles:
+                            weight += count
+                weights.append(weight)
+            idx = random.choices(range(len(available)), weights=weights, k=1)[0]
+            new_winner = int(available[idx])
+            winners.append(new_winner)
+            new_winner_mention = f"<@{new_winner}>"
+            replaced_user_mention = user.mention
+            message = f"🔄 Replaced {replaced_user_mention} with {new_winner_mention} as the new winner."
+        else:
+            # Reroll all winners
+            # Pick new set of winners (count = original winners_count)
+            winners_count = int(data.get("winners_count") or 1)
+            new_winners = await self.pick_winners(entrants, bonus_entries, winners_count, exclude=winners)
+            if not new_winners:
+                return await interaction.followup.send("❌ No new winners could be picked.", ephemeral=True)
+            winners = new_winners
+            new_winner_mentions = ", ".join([f"<@{w}>" for w in winners])
+            message = f"🔄 New winner(s) picked: {new_winner_mentions}"
 
-        new_winners = previous_winners + [new_winner_id]
+        # Update DB
         await d1_query(
             "UPDATE giveaways SET winner_ids = ?, last_reroll = ? WHERE giveaway_id = ?",
-            [json.dumps(new_winners), datetime.now(timezone.utc).isoformat(), giveaway_id]
+            [json.dumps(winners), datetime.now(timezone.utc).isoformat(), giveaway_id]
         )
 
-        await self.update_giveaway_embed(giveaway_id, winner_id=new_winner_id)
+        # Update embed
+        await self.update_giveaway_embed(giveaway_id, winners=winners)
 
-        winner = interaction.guild.get_member(new_winner_id)
-        if winner:
-            try:
-                dm_embed = discord.Embed(
-                    title="🎉 You Won the Giveaway (Reroll)!",
-                    description=f"You won **{data['prize']}** in the giveaway **{data['name']}**!",
-                    color=discord.Color.gold(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                dm_embed.add_field(name="Host", value=f"<@{data['host_id']}>", inline=True)
-                dm_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
-                await winner.send(embed=dm_embed)
-            except:
-                pass
+        # Send announcement in original channel
+        channel = interaction.guild.get_channel(int(row["channel_id"])) if row.get("channel_id") else None
+        if channel:
+            embed = discord.Embed(
+                title="🔄 Giveaway Rerolled",
+                description=message,
+                color=discord.Color.gold(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="Giveaway", value=data["name"], inline=True)
+            embed.add_field(name="Prize", value=data["prize"], inline=True)
+            await channel.send(embed=embed)
 
-        embed = discord.Embed(
+        # DM new winner(s)
+        for w in winners:
+            if user and w == new_winner:
+                member = interaction.guild.get_member(w)
+                if member:
+                    try:
+                        dm_embed = discord.Embed(
+                            title="🎉 You Won the Giveaway (Reroll)!",
+                            description=f"You won **{data['prize']}** in the giveaway **{data['name']}**!",
+                            color=discord.Color.gold(),
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        dm_embed.add_field(name="Host", value=f"<@{data['host_id']}>", inline=True)
+                        dm_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
+                        dm_embed.add_field(name="Ticket", value="A ticket has been opened for you to claim your prize.", inline=False)
+                        await member.send(embed=dm_embed)
+                    except:
+                        pass
+
+        # Log
+        log_embed = discord.Embed(
             title="🔄 Giveaway Rerolled",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
-        embed.add_field(name="New Winner", value=winner_mention, inline=True)
-        embed.add_field(name="Rerolled By", value=interaction.user.mention, inline=True)
-        await log_giveaway(self.bot, embed)
-        await send_log(self.bot, embed)
+        log_embed.add_field(name="Giveaway ID", value=giveaway_id, inline=True)
+        log_embed.add_field(name="New Winner(s)", value=", ".join([f"<@{w}>" for w in winners]), inline=True)
+        log_embed.add_field(name="Rerolled By", value=interaction.user.mention, inline=True)
+        await log_giveaway(self.bot, log_embed)
+        await send_log(self.bot, log_embed)
 
-        await interaction.followup.send(f"✅ New winner: {winner_mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ Rerolled winners!", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
