@@ -5,6 +5,7 @@ import asyncio
 import json
 import random
 import uuid
+import re
 from datetime import datetime, timezone, timedelta
 
 from bot import (
@@ -39,7 +40,7 @@ async def init_giveaway_db():
             end_time TEXT NOT NULL,
             ended INTEGER DEFAULT 0,
             winner_ids TEXT,
-            channel_id TEXT NOT NULL,
+            channel_id TEXT,
             message_id TEXT,
             bonus_entries TEXT,
             entrants TEXT DEFAULT '[]',
@@ -47,7 +48,6 @@ async def init_giveaway_db():
             last_reroll TEXT
         )"""
     )
-    # Try adding new columns if missing (safe to run)
     for col_sql in [
         "ALTER TABLE giveaways ADD COLUMN required_role_id TEXT",
         "ALTER TABLE giveaways ADD COLUMN last_reroll TEXT",
@@ -60,7 +60,6 @@ async def init_giveaway_db():
 
 # ─── Helper functions ──────────────────────────────────────
 async def log_giveaway(bot: commands.Bot, embed: discord.Embed):
-    """Send log to the dedicated giveaway log channel."""
     channel = bot.get_channel(GIVEAWAY_LOG_CHANNEL_ID)
     if channel:
         try:
@@ -74,210 +73,116 @@ def generate_giveaway_id() -> str:
 
 
 def parse_duration(duration_str: str) -> int:
-    """Convert a duration string like '1h', '2d', '30m' to seconds."""
     duration_str = duration_str.strip().lower()
-    if duration_str.endswith("h"):
-        return int(duration_str[:-1]) * 3600
-    elif duration_str.endswith("d"):
-        return int(duration_str[:-1]) * 86400
-    elif duration_str.endswith("m"):
-        return int(duration_str[:-1]) * 60
-    else:
+    if not duration_str:
+        return None
+    total_seconds = 0
+    pattern = re.compile(r'(\d+(?:\.\d+)?)\s*([hdm])')
+    matches = pattern.findall(duration_str)
+    if not matches:
         try:
-            return int(duration_str) * 60  # default to minutes
-        except ValueError:
+            return int(float(duration_str)) * 60
+        except:
             return None
+    for value, unit in matches:
+        val = float(value)
+        if unit == 'h':
+            total_seconds += val * 3600
+        elif unit == 'd':
+            total_seconds += val * 86400
+        elif unit == 'm':
+            total_seconds += val * 60
+    return int(total_seconds)
 
 
 def format_duration(seconds: int) -> str:
     days = seconds // 86400
     hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
+    parts = []
     if days:
-        return f"{days}d {hours}h"
-    elif hours:
-        return f"{hours}h {minutes}m"
-    else:
-        return f"{minutes}m"
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) if parts else "0m"
 
 
 # ─── Views ──────────────────────────────────────────────────
-class BonusEntryView(discord.ui.View):
-    def __init__(self, builder_view: "GiveawayBuilderView"):
-        super().__init__(timeout=120)
-        self.builder_view = builder_view
-        self.bonus_entries = builder_view.bonus_entries.copy() if builder_view.bonus_entries else {}
-        self.add_item(self._create_select())
-        self.add_item(self._create_quantity_input())
-
-    def _create_select(self) -> discord.ui.Select:
-        # Get all roles in the guild
-        guild = self.builder_view.interaction.guild if hasattr(self.builder_view, "interaction") else None
-        if not guild:
-            guild = self.builder_view.bot.get_guild(GUILD_ID)
-        options = []
-        # Add a "None" option to remove a role
-        options.append(discord.SelectOption(label="Remove a role", value="remove", description="Select a role to remove"))
-        for role in guild.roles:
-            if role.name != "@everyone":
-                options.append(discord.SelectOption(
-                    label=role.name[:100],
-                    value=str(role.id),
-                    description=f"Add {role.name} as bonus entry"
-                ))
-        select = discord.ui.Select(
-            placeholder="Select a role to add or remove...",
-            min_values=1,
-            max_values=1,
-            options=options[:25]  # Discord limit
-        )
-        select.callback = self._select_callback
-        return select
-
-    def _create_quantity_input(self) -> discord.ui.Button:
-        return discord.ui.Button(
-            label="Set Bonus Count",
-            style=discord.ButtonStyle.primary,
-            emoji="✏️"
-        )
-
-    @discord.ui.button(label="Set Bonus Count", style=discord.ButtonStyle.primary, emoji="✏️")
-    async def set_quantity(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Send a modal to input quantity
-        modal = BonusQuantityModal(self)
-        await interaction.response.send_modal(modal)
-
-    async def _select_callback(self, interaction: discord.Interaction):
-        select = self.children[0]
-        value = select.values[0]
-        if value == "remove":
-            # Show a dropdown of current bonus roles to remove
-            if not self.bonus_entries:
-                return await interaction.response.send_message("No bonus entries to remove.", ephemeral=True)
-            options = []
-            for role_id, count in self.bonus_entries.items():
-                role = interaction.guild.get_role(int(role_id))
-                if role:
-                    options.append(discord.SelectOption(
-                        label=role.name[:100],
-                        value=str(role_id),
-                        description=f"Bonus count: {count}"
-                    ))
-            if not options:
-                return await interaction.response.send_message("No bonus entries to remove.", ephemeral=True)
-            view = RemoveBonusView(self, options)
-            await interaction.response.send_message("Select a role to remove:", view=view, ephemeral=True)
-        else:
-            # Add role with default bonus count 1
-            role_id = int(value)
-            if role_id in self.bonus_entries:
-                return await interaction.response.send_message("This role already has bonus entries.", ephemeral=True)
-            self.bonus_entries[role_id] = 1
-            await self.builder_view.update_embed(interaction)
-            await interaction.response.send_message(f"✅ Added {interaction.guild.get_role(role_id).mention} with 1 bonus entry.", ephemeral=True)
-
-
-class RemoveBonusView(discord.ui.View):
-    def __init__(self, parent_view: BonusEntryView, options: list):
-        super().__init__(timeout=60)
-        self.parent_view = parent_view
-        self.add_item(self._create_select(options))
-
-    def _create_select(self, options: list) -> discord.ui.Select:
-        select = discord.ui.Select(
-            placeholder="Select a role to remove...",
-            min_values=1,
-            max_values=1,
-            options=options[:25]
-        )
-        select.callback = self._remove_callback
-        return select
-
-    async def _remove_callback(self, interaction: discord.Interaction):
-        select = self.children[0]
-        role_id = int(select.values[0])
-        if role_id in self.parent_view.bonus_entries:
-            del self.parent_view.bonus_entries[role_id]
-            await self.parent_view.builder_view.update_embed(interaction)
-            await interaction.response.send_message("✅ Removed bonus entry.", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
-
-
-class BonusQuantityModal(discord.ui.Modal, title="Set Bonus Count"):
-    def __init__(self, view: BonusEntryView):
-        super().__init__()
-        self.view = view
-        self.role_id = None
-        self.quantity = discord.ui.TextInput(
-            label="Bonus Entries Count",
-            placeholder="Enter number (e.g., 2)",
-            required=True,
-            max_length=10
-        )
-        self.add_item(self.quantity)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            count = int(self.quantity.value)
-            if count < 0:
-                raise ValueError
-        except ValueError:
-            return await interaction.response.send_message("❌ Please enter a valid positive number.", ephemeral=True)
-
-        # We need to get the role that was last selected; we'll use a fallback: ask user to select again
-        # For simplicity, we'll add a new role with the given count via a follow-up select
-        # This is a bit complex; we can just add a modal that asks for role ID as well, but for now,
-        # we'll let the user select the role first, then the count.
-        # Actually we can add a select in the modal? Better: we'll add a button "Set Bonus Count" that opens a modal where they type role ID and count.
-        # Let's redesign: the modal will have two fields: role ID and count.
-        # But for now, we'll just set the count for the last selected role.
-        # Since we don't have that, we'll use a simpler approach: the "Set Bonus Count" button will open a modal with role ID and count.
-        # I'll update to that.
-
-        # We'll implement a proper modal with role ID and count.
-        await interaction.response.send_message("Please use the new modal with role ID and count.", ephemeral=True)
-
-
-# Proper modal for adding bonus entries
 class BonusEntryModal(discord.ui.Modal, title="Add Bonus Entry"):
     def __init__(self, builder_view: "GiveawayBuilderView"):
         super().__init__()
         self.builder_view = builder_view
-        self.role_id = discord.ui.TextInput(
+        self.role_id_input = discord.ui.TextInput(
             label="Role ID",
             placeholder="Paste the role ID",
             required=True,
             max_length=20
         )
-        self.count = discord.ui.TextInput(
+        self.count_input = discord.ui.TextInput(
             label="Bonus Entries Count",
             placeholder="e.g., 2",
             required=True,
             max_length=10,
             default="1"
         )
-        self.add_item(self.role_id)
-        self.add_item(self.count)
+        self.add_item(self.role_id_input)
+        self.add_item(self.count_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            role_id = int(self.role_id.value)
-            count = int(self.count.value)
+            role_id = int(self.role_id_input.value)
+            count = int(self.count_input.value)
             if count < 0:
                 raise ValueError
         except ValueError:
             return await interaction.response.send_message("❌ Invalid role ID or count.", ephemeral=True)
 
-        # Check if role exists
         role = interaction.guild.get_role(role_id)
         if not role:
             return await interaction.response.send_message("❌ Role not found in this server.", ephemeral=True)
 
-        # Add to builder
         self.builder_view.bonus_entries[role_id] = count
         await self.builder_view.update_embed(interaction)
         await interaction.response.send_message(f"✅ Added {role.mention} with {count} bonus entries.", ephemeral=True)
+
+
+class RemoveBonusView(discord.ui.View):
+    def __init__(self, builder_view: "GiveawayBuilderView"):
+        super().__init__(timeout=60)
+        self.builder_view = builder_view
+        options = []
+        for role_id, count in builder_view.bonus_entries.items():
+            role = builder_view.bot.get_guild(GUILD_ID).get_role(role_id)
+            if role:
+                options.append(discord.SelectOption(
+                    label=role.name[:100],
+                    value=str(role_id),
+                    description=f"Bonus: {count}"
+                ))
+        if options:
+            select = discord.ui.Select(
+                placeholder="Select a bonus entry to remove...",
+                min_values=1,
+                max_values=1,
+                options=options[:25]
+            )
+            select.callback = self._remove_callback
+            self.add_item(select)
+        else:
+            self.add_item(discord.ui.Button(label="No bonus entries to remove", disabled=True, style=discord.ButtonStyle.secondary))
+
+    async def _remove_callback(self, interaction: discord.Interaction):
+        select = self.children[0]
+        role_id = int(select.values[0])
+        if role_id in self.builder_view.bonus_entries:
+            del self.builder_view.bonus_entries[role_id]
+            await self.builder_view.update_embed(interaction)
+            await interaction.response.send_message("✅ Removed bonus entry.", ephemeral=True)
+            self.stop()
+        else:
+            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
 
 
 class GiveawayBuilderView(discord.ui.View):
@@ -291,9 +196,9 @@ class GiveawayBuilderView(discord.ui.View):
             "name": "",
             "sponsor": "",
             "prize": "",
-            "duration": 86400,  # default 1 day in seconds
+            "duration": 86400,
             "required_role_id": VERIFIED_ROLE_ID,
-            "bonus_entries": {},  # role_id -> count
+            "bonus_entries": {},
             "giveaway_id": None,
         }
         if giveaway_data:
@@ -335,7 +240,6 @@ class GiveawayBuilderView(discord.ui.View):
             value=required_role_mention,
             inline=True
         )
-        # Bonus entries
         bonus_text = ""
         if self.bonus_entries:
             for role_id, count in self.bonus_entries.items():
@@ -409,7 +313,6 @@ class GiveawayBuilderView(discord.ui.View):
     async def change_required_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._check_user(interaction):
             return
-        # Show a dropdown of roles (select menu)
         guild = interaction.guild
         options = []
         for role in guild.roles:
@@ -437,18 +340,25 @@ class GiveawayBuilderView(discord.ui.View):
         await self.update_embed(interaction)
         await interaction.response.edit_message(content="✅ Required role updated.", view=None)
 
-    @discord.ui.button(label="Manage Bonus Entries", style=discord.ButtonStyle.primary)
-    async def manage_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Add Bonus Entry", style=discord.ButtonStyle.primary)
+    async def add_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._check_user(interaction):
             return
-        # Show a modal to add bonus entries
         await interaction.response.send_modal(BonusEntryModal(self))
+
+    @discord.ui.button(label="Remove Bonus Entry", style=discord.ButtonStyle.danger)
+    async def remove_bonus(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
+        if not self.bonus_entries:
+            return await interaction.response.send_message("❌ No bonus entries to remove.", ephemeral=True)
+        view = RemoveBonusView(self)
+        await interaction.response.send_message("Select a bonus entry to remove:", view=view, ephemeral=True)
 
     @discord.ui.button(label="Preview", style=discord.ButtonStyle.secondary)
     async def preview(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._check_user(interaction):
             return
-        # Build a public embed preview and send ephemeral
         embed = await self.build_preview_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -465,7 +375,6 @@ class GiveawayBuilderView(discord.ui.View):
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
-        # Bonus entries
         bonus_text = ""
         if self.bonus_entries:
             for role_id, count in self.bonus_entries.items():
@@ -482,7 +391,6 @@ class GiveawayBuilderView(discord.ui.View):
         if not self._check_user(interaction):
             return
 
-        # Validate required fields
         if not self.data["name"]:
             return await interaction.response.send_message("❌ Please set a name.", ephemeral=True)
         if not self.data["prize"]:
@@ -490,11 +398,11 @@ class GiveawayBuilderView(discord.ui.View):
         if not self.data["duration"]:
             return await interaction.response.send_message("❌ Please set a duration.", ephemeral=True)
 
-        # Determine mode: create or edit
+        giveaway_id = self.data.get("giveaway_id")
         if self.mode == "create":
             giveaway_id = generate_giveaway_id()
             self.data["giveaway_id"] = giveaway_id
-            # Save to DB
+            await self.post_public_embed(interaction, giveaway_id)
             now = datetime.now(timezone.utc).isoformat()
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
@@ -518,10 +426,7 @@ class GiveawayBuilderView(discord.ui.View):
                     None
                 ]
             )
-            # Post public embed
-            await self.post_public_embed(interaction)
             await interaction.response.send_message(f"✅ Giveaway posted! ID: {giveaway_id}", ephemeral=True)
-            # Log
             embed = discord.Embed(
                 title="🎉 Giveaway Created",
                 color=discord.Color.green(),
@@ -533,8 +438,7 @@ class GiveawayBuilderView(discord.ui.View):
             await log_giveaway(self.bot, embed)
             await send_log(self.bot, embed)
         else:
-            # Update existing giveaway
-            giveaway_id = self.data["giveaway_id"]
+            await self.update_public_embed(interaction, giveaway_id)
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
                 """UPDATE giveaways SET
@@ -551,10 +455,7 @@ class GiveawayBuilderView(discord.ui.View):
                     giveaway_id
                 ]
             )
-            # Update public embed
-            await self.update_public_embed(interaction)
             await interaction.response.send_message(f"✅ Giveaway updated! ID: {giveaway_id}", ephemeral=True)
-            # Log
             embed = discord.Embed(
                 title="✏️ Giveaway Updated",
                 color=discord.Color.orange(),
@@ -566,7 +467,7 @@ class GiveawayBuilderView(discord.ui.View):
             await log_giveaway(self.bot, embed)
             await send_log(self.bot, embed)
 
-    async def post_public_embed(self, interaction: discord.Interaction):
+    async def post_public_embed(self, interaction: discord.Interaction, giveaway_id: str):
         guild = interaction.guild
         channel = interaction.channel
         required_role = guild.get_role(self.data["required_role_id"]) if self.data["required_role_id"] else None
@@ -583,7 +484,6 @@ class GiveawayBuilderView(discord.ui.View):
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
-        # Bonus entries
         bonus_text = ""
         if self.bonus_entries:
             for role_id, count in self.bonus_entries.items():
@@ -592,21 +492,19 @@ class GiveawayBuilderView(discord.ui.View):
                     bonus_text += f"{role.mention}: {count} entries\n"
         if bonus_text:
             embed.add_field(name="⭐ Bonus Entries", value=bonus_text, inline=False)
-        embed.set_footer(text=f"Giveaway ID: {self.data['giveaway_id']}")
+        embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
 
-        view = GiveawayPublicView(self.bot, self.data["giveaway_id"])
+        view = GiveawayPublicView(self.bot, giveaway_id)
         message = await channel.send(embed=embed, view=view)
-        # Store message ID
         await d1_query(
             "UPDATE giveaways SET channel_id = ?, message_id = ? WHERE giveaway_id = ?",
-            [str(channel.id), str(message.id), self.data["giveaway_id"]]
+            [str(channel.id), str(message.id), giveaway_id]
         )
 
-    async def update_public_embed(self, interaction: discord.Interaction):
-        # Fetch the existing giveaway message
+    async def update_public_embed(self, interaction: discord.Interaction, giveaway_id: str):
         row = await d1_query(
             "SELECT channel_id, message_id FROM giveaways WHERE giveaway_id = ?",
-            [self.data["giveaway_id"]]
+            [giveaway_id]
         )
         if not row["results"]:
             return
@@ -619,11 +517,10 @@ class GiveawayBuilderView(discord.ui.View):
             message = await channel.fetch_message(message_id)
         except:
             return
-        # Build new embed
+
         required_role = interaction.guild.get_role(self.data["required_role_id"]) if self.data["required_role_id"] else None
         end_timestamp = int((datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).timestamp())
-        # Get current entrants count from DB
-        row2 = await d1_query("SELECT entrants FROM giveaways WHERE giveaway_id = ?", [self.data["giveaway_id"]])
+        row2 = await d1_query("SELECT entrants FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
         entrants = json.loads(row2["results"][0]["entrants"]) if row2["results"] else []
 
         embed = discord.Embed(
@@ -645,9 +542,9 @@ class GiveawayBuilderView(discord.ui.View):
                     bonus_text += f"{role.mention}: {count} entries\n"
         if bonus_text:
             embed.add_field(name="⭐ Bonus Entries", value=bonus_text, inline=False)
-        embed.set_footer(text=f"Giveaway ID: {self.data['giveaway_id']}")
+        embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
 
-        view = GiveawayPublicView(self.bot, self.data["giveaway_id"])
+        view = GiveawayPublicView(self.bot, giveaway_id)
         await message.edit(embed=embed, view=view)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
@@ -719,19 +616,20 @@ class GiveawayDurationModal(discord.ui.Modal, title="Duration"):
     def __init__(self, view: GiveawayBuilderView):
         super().__init__()
         self.view = view
+        default_val = format_duration(view.data["duration"]) if view.data["duration"] else "1d"
         self.duration_input = discord.ui.TextInput(
             label="Duration",
-            placeholder="e.g., 1h, 2d, 30m",
-            max_length=10,
+            placeholder="e.g., 1h, 2d, 30m, 1d 12h",
+            max_length=20,
             required=True,
-            default=format_duration(view.data["duration"])
+            default=default_val
         )
         self.add_item(self.duration_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         seconds = parse_duration(self.duration_input.value)
-        if seconds is None:
-            return await interaction.response.send_message("❌ Invalid duration format. Use e.g., 1h, 2d, 30m.", ephemeral=True)
+        if seconds is None or seconds <= 0:
+            return await interaction.response.send_message("❌ Invalid duration format. Use e.g., 1h, 2d, 30m, 1d 12h.", ephemeral=True)
         self.view.data["duration"] = seconds
         await self.view.update_embed(interaction)
 
@@ -745,7 +643,6 @@ class GiveawayPublicView(discord.ui.View):
 
     @discord.ui.button(label="🎁 Join Giveaway", style=discord.ButtonStyle.success, custom_id="join_giveaway")
     async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if user has required role
         row = await d1_query(
             "SELECT required_role_id, entrants, status, host_id, giveaway_id FROM giveaways WHERE giveaway_id = ?",
             [self.giveaway_id]
@@ -762,25 +659,20 @@ class GiveawayPublicView(discord.ui.View):
             if role and role not in interaction.user.roles:
                 return await interaction.response.send_message(f"❌ You need the {role.mention} role to join this giveaway.", ephemeral=True)
 
-        # Check if already entered
         entrants = json.loads(data["entrants"])
         user_id_str = str(interaction.user.id)
         if user_id_str in entrants:
             return await interaction.response.send_message("⚠️ You are already entered in this giveaway!", ephemeral=True)
 
-        # Add user
         entrants.append(user_id_str)
         await d1_query(
             "UPDATE giveaways SET entrants = ? WHERE giveaway_id = ?",
             [json.dumps(entrants), self.giveaway_id]
         )
 
-        # Update the embed with new count
         await self.update_embed(interaction)
-
         await interaction.response.send_message("✅ You have been entered! Good luck!", ephemeral=True)
 
-        # Log
         embed = discord.Embed(
             title="🎁 User Joined Giveaway",
             color=discord.Color.blue(),
@@ -791,7 +683,6 @@ class GiveawayPublicView(discord.ui.View):
         await log_giveaway(self.bot, embed)
 
     async def update_embed(self, interaction: discord.Interaction):
-        # Fetch current data
         row = await d1_query(
             "SELECT name, sponsor, prize, host_id, required_role_id, end_time, entrants, bonus_entries FROM giveaways WHERE giveaway_id = ?",
             [self.giveaway_id]
@@ -825,7 +716,6 @@ class GiveawayPublicView(discord.ui.View):
             embed.add_field(name="⭐ Bonus Entries", value=bonus_text, inline=False)
         embed.set_footer(text=f"Giveaway ID: {self.giveaway_id}")
 
-        # Get the original message
         msg = interaction.message
         await msg.edit(embed=embed, view=self)
 
@@ -848,7 +738,6 @@ class Giveaway(commands.Cog):
     async def check_expired_giveaways(self):
         await self.bot.wait_until_ready()
         now = datetime.now(timezone.utc).isoformat()
-        # Find active giveaways with end_time < now
         rows = await d1_query(
             "SELECT giveaway_id FROM giveaways WHERE status = 'active' AND end_time < ?",
             [now]
@@ -857,7 +746,6 @@ class Giveaway(commands.Cog):
             await self.end_giveaway(row["giveaway_id"], auto=True)
 
     async def end_giveaway(self, giveaway_id: str, auto: bool = False, interaction: discord.Interaction = None):
-        # Fetch giveaway data
         row = await d1_query(
             "SELECT * FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
@@ -870,16 +758,13 @@ class Giveaway(commands.Cog):
 
         entrants = json.loads(data["entrants"])
         if not entrants:
-            # No entrants: cancel
             await d1_query("UPDATE giveaways SET status = 'cancelled' WHERE giveaway_id = ?", [giveaway_id])
             await self.update_giveaway_embed(giveaway_id, cancelled=True)
             return
 
-        # Build weighted list
         weights = []
         for user_id in entrants:
             weight = 1
-            # Check bonus entries
             bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
             for role_id, count in bonus_entries.items():
                 role = discord.utils.get(self.bot.get_guild(GUILD_ID).roles, id=int(role_id))
@@ -889,21 +774,17 @@ class Giveaway(commands.Cog):
                         weight += count
             weights.append(weight)
 
-        # Pick winner(s) - we'll pick one winner
         winner_id = int(random.choices(entrants, weights=weights, k=1)[0])
         winner = self.bot.get_guild(GUILD_ID).get_member(winner_id)
         winner_mention = winner.mention if winner else f"<@{winner_id}>"
 
-        # Update DB
         await d1_query(
             "UPDATE giveaways SET status = 'ended', winner_ids = ? WHERE giveaway_id = ?",
             [json.dumps([winner_id]), giveaway_id]
         )
 
-        # Update embed
         await self.update_giveaway_embed(giveaway_id, winner_id=winner_id)
 
-        # DM the winner
         try:
             dm_embed = discord.Embed(
                 title="🎉 You Won the Giveaway!",
@@ -919,13 +800,11 @@ class Giveaway(commands.Cog):
         except:
             pass
 
-        # Ping giveaway ping role
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
         channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel and ping_role:
             await channel.send(f"{ping_role.mention} 🎉 **{data['name']}** has ended! Winner: {winner_mention}")
 
-        # Log
         embed = discord.Embed(
             title="🏁 Giveaway Ended",
             color=discord.Color.gold(),
@@ -947,6 +826,8 @@ class Giveaway(commands.Cog):
         if not row["results"]:
             return
         data = row["results"][0]
+        if not data["channel_id"] or not data["message_id"]:
+            return
         channel_id = int(data["channel_id"])
         message_id = int(data["message_id"])
         channel = self.bot.get_channel(channel_id)
@@ -974,7 +855,6 @@ class Giveaway(commands.Cog):
         embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
         embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
 
-        # Disable buttons if ended/cancelled
         view = None
         if winner_id or cancelled:
             view = discord.ui.View(timeout=None)
@@ -987,13 +867,8 @@ class Giveaway(commands.Cog):
     @app_commands.command(name="sgiveaway", description="Start a new giveaway (Requires Giveaway Host role)")
     @app_commands.checks.cooldown(1, 10)
     async def sgiveaway(self, interaction: discord.Interaction):
-        # Check permission: must have Giveaway Host role or be Founder
         if not any(role.id == GIVEAWAY_HOST_ROLE_ID for role in interaction.user.roles) and not is_founder(interaction.user):
             return await interaction.response.send_message("❌ You need the Giveaway Host role to create giveaways.", ephemeral=True)
-
-        # Ensure they have a role above the default required role (Verified) or are founder
-        # We'll just let them set it; they can choose any role.
-        # No immediate check needed.
 
         view = GiveawayBuilderView(self.bot, interaction.user.id, mode="create", interaction=interaction)
         embed = view.build_embed()
@@ -1003,9 +878,8 @@ class Giveaway(commands.Cog):
     @app_commands.describe(giveaway_id="The giveaway ID to edit")
     @app_commands.checks.cooldown(1, 10)
     async def egiveaway(self, interaction: discord.Interaction, giveaway_id: str):
-        # Permission: must be host or Head Staff+ or Founder
         row = await d1_query(
-            "SELECT host_id, name, sponsor, prize, required_role_id, bonus_entries, duration, status FROM giveaways WHERE giveaway_id = ?",
+            "SELECT host_id, name, sponsor, prize, required_role_id, bonus_entries, status FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
@@ -1014,35 +888,27 @@ class Giveaway(commands.Cog):
         if data["status"] != "active":
             return await interaction.response.send_message("❌ This giveaway is not active (ended/cancelled).", ephemeral=True)
 
-        # Permission check
         host_id = int(data["host_id"])
         if interaction.user.id != host_id and not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message("❌ You don't have permission to edit this giveaway.", ephemeral=True)
 
-        # Build data dict for builder
+        row2 = await d1_query("SELECT created_at, end_time FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
+        if row2["results"]:
+            created_at = datetime.fromisoformat(row2["results"][0]["created_at"])
+            end_time = datetime.fromisoformat(row2["results"][0]["end_time"])
+            duration_seconds = int((end_time - created_at).total_seconds())
+        else:
+            duration_seconds = 86400
+
         builder_data = {
             "name": data["name"],
             "sponsor": data["sponsor"] or "",
             "prize": data["prize"],
             "required_role_id": int(data["required_role_id"]),
             "bonus_entries": json.loads(data["bonus_entries"]) if data["bonus_entries"] else {},
-            "duration": parse_duration(data["duration"]) if data["duration"] else 86400,
+            "duration": duration_seconds,
             "giveaway_id": giveaway_id,
         }
-        # Parse duration from DB (stored as seconds? we need to store duration in seconds, or compute from end_time - created_at)
-        # We'll store duration as seconds; we'll add it to DB.
-        # Actually we need to store duration in the DB as seconds; we'll add a column later.
-        # For now, we can compute from end_time and created_at.
-        # Let's assume we have duration stored; if not, we'll compute.
-        # I'll add a column 'duration_seconds' later.
-        # For simplicity, we'll compute from end_time - created_at.
-        row2 = await d1_query("SELECT created_at, end_time FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
-        if row2["results"]:
-            created_at = datetime.fromisoformat(row2["results"][0]["created_at"])
-            end_time = datetime.fromisoformat(row2["results"][0]["end_time"])
-            duration_seconds = int((end_time - created_at).total_seconds())
-            builder_data["duration"] = duration_seconds
-
         view = GiveawayBuilderView(self.bot, interaction.user.id, mode="edit", giveaway_data=builder_data, interaction=interaction)
         embed = view.build_embed()
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -1097,7 +963,6 @@ class Giveaway(commands.Cog):
     @app_commands.describe(giveaway_id="The giveaway ID to reroll")
     @app_commands.checks.cooldown(1, 10)
     async def reroll(self, interaction: discord.Interaction, giveaway_id: str):
-        # Permission: Head Staff+ or host
         row = await d1_query(
             "SELECT host_id, status, winner_ids, entrants, bonus_entries, name, prize FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
@@ -1112,7 +977,6 @@ class Giveaway(commands.Cog):
         if interaction.user.id != host_id and not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message("❌ You don't have permission to reroll this giveaway.", ephemeral=True)
 
-        # Check cooldown (60 min)
         last_reroll_row = await d1_query(
             "SELECT last_reroll FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
@@ -1127,13 +991,11 @@ class Giveaway(commands.Cog):
         if not entrants:
             return await interaction.response.send_message("❌ No entrants to reroll.", ephemeral=True)
 
-        # Exclude previous winners
         previous_winners = json.loads(data["winner_ids"]) if data["winner_ids"] else []
         available = [uid for uid in entrants if uid not in previous_winners]
         if not available:
             return await interaction.response.send_message("❌ No new entrants to reroll.", ephemeral=True)
 
-        # Weighted selection
         weights = []
         bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
         for user_id in available:
@@ -1149,17 +1011,14 @@ class Giveaway(commands.Cog):
         new_winner_id = int(random.choices(available, weights=weights, k=1)[0])
         winner_mention = f"<@{new_winner_id}>"
 
-        # Update winners list
         new_winners = previous_winners + [new_winner_id]
         await d1_query(
             "UPDATE giveaways SET winner_ids = ?, last_reroll = ? WHERE giveaway_id = ?",
             [json.dumps(new_winners), datetime.now(timezone.utc).isoformat(), giveaway_id]
         )
 
-        # Update embed
         await self.update_giveaway_embed(giveaway_id, winner_id=new_winner_id)
 
-        # DM new winner
         winner = interaction.guild.get_member(new_winner_id)
         if winner:
             try:
@@ -1175,7 +1034,6 @@ class Giveaway(commands.Cog):
             except:
                 pass
 
-        # Log
         embed = discord.Embed(
             title="🔄 Giveaway Rerolled",
             color=discord.Color.gold(),
