@@ -238,7 +238,7 @@ class RoleBuilderView(discord.ui.View):
                 "**Mode:** " + ("Creating" if self.mode == "create" else "Editing") + " your custom role.\n"
                 "Use the buttons below to change each field, then click **Apply Changes** to save.\n\n"
                 "**Note:** Role icons are not available until the server reaches Level 2.\n"
-                "A gradient emoji will be generated for your role and stored for future use."
+                "Gradient emojis for built‑in roles are automatically generated."
             ),
             color=self.data["color"],
             timestamp=datetime.now(timezone.utc)
@@ -416,7 +416,16 @@ class CustomRolePanelView(discord.ui.View):
     @discord.ui.button(label="🆕 Manage Role", style=discord.ButtonStyle.success, custom_id="cr_manage")
     async def manage_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
+            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
+
+        # If the interaction is already done, we can't send a new response
+        if interaction.response.is_done():
+            # Try followup
+            try:
+                await interaction.followup.send("⚠️ Interaction expired. Please try again.", ephemeral=True)
+            except:
+                pass
+            return
 
         existing = await get_custom_role(interaction.user.id)
         mode = "edit" if existing else "create"
@@ -424,7 +433,7 @@ class CustomRolePanelView(discord.ui.View):
         if existing:
             role = interaction.guild.get_role(existing)
             if not role:
-                return await interaction.response.send_message("❌ Your custom role no longer exists.", ephemeral=True)
+                return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
             existing_data = {
                 "name": role.name,
                 "color": role.color,
