@@ -28,9 +28,7 @@ from bot import (
 CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
 ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
 ICONS_FOLDER = Path("icons")
-
-# ─── Bot's specific role ID for positioning ──────────────
-BOT_ROLE_ID = 1535635733791121443
+BOTTOM_POSITION = 1  # Place custom role at the very bottom (just above @everyone)
 
 logger = logging.getLogger(__name__)
 
@@ -307,23 +305,18 @@ class RoleBuilderView(discord.ui.View):
                     reason=f"Custom role created by {interaction.user}"
                 )
 
-                # ─── Position the role directly below the bot's specific role ───
-                bot_role = guild.get_role(BOT_ROLE_ID)
-                if bot_role:
-                    target_position = max(1, bot_role.position - 1)
-                else:
-                    # Fallback: use bot's highest role
-                    bot_top = max(guild.me.roles, key=lambda r: r.position)
-                    target_position = max(1, bot_top.position - 1)
-
+                # ─── Place the role at the BOTTOM (just above @everyone) ──────
+                # Position 1 is the lowest possible (position 0 is @everyone)
                 try:
-                    await role.edit(position=target_position)
-                    logger.info(f"✅ Custom role {role.name} placed at position {target_position}")
+                    await role.edit(position=BOTTOM_POSITION)
+                    logger.info(f"✅ Custom role {role.name} placed at bottom (position {BOTTOM_POSITION})")
                 except Exception as e:
-                    logger.warning(f"Failed to set role position: {e}")
+                    logger.warning(f"Failed to set role position to {BOTTOM_POSITION}: {e}")
+                    # If that fails, try the lowest available position
                     try:
-                        await role.edit(position=1)
-                        logger.info("✅ Custom role placed at position 1 as fallback")
+                        lowest = min([r.position for r in guild.roles if r.position > 0], default=1)
+                        await role.edit(position=lowest)
+                        logger.info(f"✅ Custom role placed at lowest available position {lowest}")
                     except Exception as e2:
                         logger.warning(f"Fallback also failed: {e2}")
 
@@ -387,7 +380,6 @@ class RoleBuilderView(discord.ui.View):
         await interaction.response.send_message("❌ Role builder cancelled.", ephemeral=True)
         for child in self.children:
             child.disabled = True
-        # Use edit_original_response for ephemeral messages
         embed = self.build_embed()
         await interaction.edit_original_response(embed=embed, view=self)
 
