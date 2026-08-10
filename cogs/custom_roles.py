@@ -258,18 +258,29 @@ class RoleBuilderView(discord.ui.View):
 
     async def update_embed(self, interaction: discord.Interaction):
         embed = self.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except discord.NotFound:
+            # The interaction expired – the user will need to start over
+            await interaction.followup.send("⏰ Your session expired. Please click 'Manage Role' again.", ephemeral=True)
 
     @discord.ui.button(label="Change Name", style=discord.ButtonStyle.primary)
     async def change_name(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
         await interaction.response.send_modal(NameModal(self))
 
     @discord.ui.button(label="Change Color", style=discord.ButtonStyle.primary)
     async def change_color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
         await interaction.response.send_modal(ColorModal(self))
 
     @discord.ui.button(label="Apply Changes", style=discord.ButtonStyle.success)
     async def apply_changes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
+
         # Validate data
         if not self.data["name"]:
             return await interaction.response.send_message("❌ Please set a name first.", ephemeral=True)
@@ -358,10 +369,18 @@ class RoleBuilderView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._check_user(interaction):
+            return
         await interaction.response.send_message("❌ Role builder cancelled.", ephemeral=True)
         for child in self.children:
             child.disabled = True
         await interaction.message.edit(view=self)
+
+    def _check_user(self, interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            interaction.response.send_message("❌ This is not your builder session.", ephemeral=True)
+            return False
+        return True
 
 
 class NameModal(discord.ui.Modal, title="Change Role Name"):
@@ -418,15 +437,6 @@ class CustomRolePanelView(discord.ui.View):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
             return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
 
-        # If the interaction is already done, we can't send a new response
-        if interaction.response.is_done():
-            # Try followup
-            try:
-                await interaction.followup.send("⚠️ Interaction expired. Please try again.", ephemeral=True)
-            except:
-                pass
-            return
-
         existing = await get_custom_role(interaction.user.id)
         mode = "edit" if existing else "create"
 
@@ -443,7 +453,7 @@ class CustomRolePanelView(discord.ui.View):
 
         view = RoleBuilderView(interaction.user.id, mode, existing_data)
         embed = view.build_embed()
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await safe_respond(interaction, embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
     async def preview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -468,7 +478,7 @@ class CustomRolePanelView(discord.ui.View):
             inline=False
         )
         embed.set_footer(text="This is how your role will appear.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await safe_respond(interaction, embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="cr_delete")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -482,7 +492,7 @@ class CustomRolePanelView(discord.ui.View):
             return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
         confirm_view = ConfirmDeleteView(role.id, interaction.user.id)
-        await interaction.response.send_message(
+        await safe_respond(interaction, 
             "⚠️ Are you sure you want to delete your custom role? This action cannot be undone.",
             view=confirm_view,
             ephemeral=True
