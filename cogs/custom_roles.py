@@ -28,7 +28,7 @@ from bot import (
 CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
 ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
 ICONS_FOLDER = Path("icons")
-BOTTOM_POSITION = 1  # Place custom role at the very bottom (just above @everyone)
+BOT_ROLE_ID = 1535635733791121443  # The bot's specific role for top positioning
 
 logger = logging.getLogger(__name__)
 
@@ -305,20 +305,41 @@ class RoleBuilderView(discord.ui.View):
                     reason=f"Custom role created by {interaction.user}"
                 )
 
-                # ─── Place the role at the BOTTOM (just above @everyone) ──────
-                # Position 1 is the lowest possible (position 0 is @everyone)
-                try:
-                    await role.edit(position=BOTTOM_POSITION)
-                    logger.info(f"✅ Custom role {role.name} placed at bottom (position {BOTTOM_POSITION})")
-                except Exception as e:
-                    logger.warning(f"Failed to set role position to {BOTTOM_POSITION}: {e}")
-                    # If that fails, try the lowest available position
+                # ─── Place the role at the VERY TOP ──────────────────────────
+                # Try to position it just below the bot's specific role
+                bot_role = guild.get_role(BOT_ROLE_ID)
+                if bot_role:
+                    target_position = bot_role.position - 1
+                    if target_position < 1:
+                        target_position = 1
                     try:
-                        lowest = min([r.position for r in guild.roles if r.position > 0], default=1)
-                        await role.edit(position=lowest)
-                        logger.info(f"✅ Custom role placed at lowest available position {lowest}")
-                    except Exception as e2:
-                        logger.warning(f"Fallback also failed: {e2}")
+                        await role.edit(position=target_position)
+                        logger.info(f"✅ Custom role {role.name} placed at position {target_position}")
+                    except Exception as e:
+                        logger.warning(f"Failed to set role position: {e}")
+                        # Fallback: use bot's highest role
+                        bot_top = max(guild.me.roles, key=lambda r: r.position)
+                        target_position = bot_top.position - 1
+                        try:
+                            await role.edit(position=target_position)
+                            logger.info(f"✅ Custom role placed at position {target_position} (fallback)")
+                        except Exception as e2:
+                            logger.warning(f"Fallback also failed: {e2}")
+                else:
+                    # No bot role found; use the bot's highest role
+                    bot_top = max(guild.me.roles, key=lambda r: r.position)
+                    target_position = bot_top.position - 1
+                    try:
+                        await role.edit(position=target_position)
+                        logger.info(f"✅ Custom role placed at position {target_position}")
+                    except Exception as e:
+                        logger.warning(f"Failed to set role position: {e}")
+                        # Last resort: try position 1
+                        try:
+                            await role.edit(position=1)
+                            logger.info("✅ Custom role placed at position 1 as last resort")
+                        except Exception as e3:
+                            logger.warning(f"All positioning attempts failed: {e3}")
 
                 await interaction.user.add_roles(role)
                 await create_custom_role_entry(interaction.user.id, role.id)
