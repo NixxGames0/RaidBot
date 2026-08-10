@@ -1,3 +1,4 @@
 discord.py
 requests
 python-dotenv
+Pillow>=9.0.0
