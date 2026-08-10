@@ -222,7 +222,7 @@ class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
         super().__init__(timeout=300)  # 5 minutes
         self.user_id = user_id
-        self.mode = mode  # "create" or "edit"
+        self.mode = mode
         self.data = {
             "name": "",
             "color": discord.Color.blurple(),
@@ -230,6 +230,7 @@ class RoleBuilderView(discord.ui.View):
         if existing_data:
             self.data["name"] = existing_data.get("name", "")
             self.data["color"] = existing_data.get("color", discord.Color.blurple())
+        self._message = None  # will store the original message
 
     def build_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -259,10 +260,18 @@ class RoleBuilderView(discord.ui.View):
     async def update_embed(self, interaction: discord.Interaction):
         embed = self.build_embed()
         try:
-            await interaction.response.edit_message(embed=embed, view=self)
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=self)
+            else:
+                await interaction.edit_original_response(embed=embed, view=self)
         except discord.NotFound:
-            # The interaction expired – the user will need to start over
             await interaction.followup.send("⏰ Your session expired. Please click 'Manage Role' again.", ephemeral=True)
+
+    def _check_user(self, interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            interaction.response.send_message("❌ This is not your builder session.", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="Change Name", style=discord.ButtonStyle.primary)
     async def change_name(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -281,91 +290,84 @@ class RoleBuilderView(discord.ui.View):
         if not self._check_user(interaction):
             return
 
-        # Validate data
         if not self.data["name"]:
             return await interaction.response.send_message("❌ Please set a name first.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        if self.mode == "create":
-            # Create the role
-            try:
+        try:
+            if self.mode == "create":
+                # Create the role
                 role = await guild.create_role(
                     name=self.data["name"],
                     color=self.data["color"],
                     reason=f"Custom role created by {interaction.user}"
                 )
-            except Exception as e:
-                return await interaction.followup.send(f"❌ Failed to create role: {e}", ephemeral=True)
 
-            # Position at the top
-            bot_top = max(guild.me.roles, key=lambda r: r.position)
-            target_position = max(1, bot_top.position - 1)
-            try:
-                await role.edit(position=target_position)
-            except Exception:
+                # Position at the top
+                bot_top = max(guild.me.roles, key=lambda r: r.position)
+                target_position = max(1, bot_top.position - 1)
                 try:
-                    await role.edit(position=1)
-                except:
-                    pass
+                    await role.edit(position=target_position)
+                except Exception:
+                    try:
+                        await role.edit(position=1)
+                    except:
+                        pass
 
-            await interaction.user.add_roles(role)
-            await create_custom_role_entry(interaction.user.id, role.id)
+                await interaction.user.add_roles(role)
+                await create_custom_role_entry(interaction.user.id, role.id)
 
-            embed = discord.Embed(
-                title="✅ Custom Role Created",
-                color=self.data["color"],
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Role", value=role.mention, inline=True)
-            embed.add_field(name="Name", value=self.data["name"], inline=True)
-            embed.add_field(name="Color", value=f"#{self.data['color'].value:06x}", inline=True)
-            await send_log(interaction.client, embed)
+                embed = discord.Embed(
+                    title="✅ Custom Role Created",
+                    color=self.data["color"],
+                    timestamp=datetime.now(timezone.utc)
+                )
+                embed.add_field(name="Role", value=role.mention, inline=True)
+                embed.add_field(name="Name", value=self.data["name"], inline=True)
+                embed.add_field(name="Color", value=f"#{self.data['color'].value:06x}", inline=True)
+                await send_log(interaction.client, embed)
 
-            # Disable buttons
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(embed=embed, view=self)
+                # Disable buttons and update the original message
+                for child in self.children:
+                    child.disabled = True
+                await interaction.edit_original_response(embed=embed, view=self)
+                await interaction.followup.send(
+                    f"✅ Your custom role **{role.name}** has been created!",
+                    ephemeral=True
+                )
 
-            await interaction.followup.send(
-                f"✅ Your custom role **{role.name}** has been created!",
-                ephemeral=True
-            )
+            else:  # edit
+                existing = await get_custom_role(interaction.user.id)
+                if not existing:
+                    return await interaction.followup.send("❌ No custom role found to edit.", ephemeral=True)
+                role = guild.get_role(existing)
+                if not role:
+                    return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
 
-        else:  # edit
-            existing = await get_custom_role(interaction.user.id)
-            if not existing:
-                return await interaction.followup.send("❌ No custom role found to edit.", ephemeral=True)
-            role = guild.get_role(existing)
-            if not role:
-                return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
-
-            # Update the role
-            try:
                 await role.edit(name=self.data["name"], color=self.data["color"])
-            except Exception as e:
-                return await interaction.followup.send(f"❌ Failed to update role: {e}", ephemeral=True)
 
-            embed = discord.Embed(
-                title="✏️ Custom Role Updated",
-                color=self.data["color"],
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Role", value=role.mention, inline=True)
-            embed.add_field(name="New Name", value=self.data["name"], inline=True)
-            embed.add_field(name="New Color", value=f"#{self.data['color'].value:06x}", inline=True)
-            await send_log(interaction.client, embed)
+                embed = discord.Embed(
+                    title="✏️ Custom Role Updated",
+                    color=self.data["color"],
+                    timestamp=datetime.now(timezone.utc)
+                )
+                embed.add_field(name="Role", value=role.mention, inline=True)
+                embed.add_field(name="New Name", value=self.data["name"], inline=True)
+                embed.add_field(name="New Color", value=f"#{self.data['color'].value:06x}", inline=True)
+                await send_log(interaction.client, embed)
 
-            # Disable buttons
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(embed=embed, view=self)
+                for child in self.children:
+                    child.disabled = True
+                await interaction.edit_original_response(embed=embed, view=self)
+                await interaction.followup.send(
+                    f"✅ Your custom role has been updated to **{role.name}**!",
+                    ephemeral=True
+                )
 
-            await interaction.followup.send(
-                f"✅ Your custom role has been updated to **{role.name}**!",
-                ephemeral=True
-            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -375,12 +377,6 @@ class RoleBuilderView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.message.edit(view=self)
-
-    def _check_user(self, interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            interaction.response.send_message("❌ This is not your builder session.", ephemeral=True)
-            return False
-        return True
 
 
 class NameModal(discord.ui.Modal, title="Change Role Name"):
@@ -453,6 +449,7 @@ class CustomRolePanelView(discord.ui.View):
 
         view = RoleBuilderView(interaction.user.id, mode, existing_data)
         embed = view.build_embed()
+        # Send the builder as an ephemeral message
         await safe_respond(interaction, embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
@@ -492,7 +489,7 @@ class CustomRolePanelView(discord.ui.View):
             return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
         confirm_view = ConfirmDeleteView(role.id, interaction.user.id)
-        await safe_respond(interaction, 
+        await safe_respond(interaction,
             "⚠️ Are you sure you want to delete your custom role? This action cannot be undone.",
             view=confirm_view,
             ephemeral=True
