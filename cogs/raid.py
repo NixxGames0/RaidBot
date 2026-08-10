@@ -135,27 +135,44 @@ def raid_exists(guild_id: int) -> bool:
 
 # ── Setup Message Cleanup ──────────────────────────────────────────────────
 async def cleanup_setup_messages_except(guild_id: int, channel: discord.TextChannel, keep_message_id: int = None):
-    """Delete old setup messages for a guild, optionally keeping one"""
-    if guild_id in setup_messages:
-        for msg_id in setup_messages[guild_id]:
-            if keep_message_id and msg_id == keep_message_id:
-                continue
-            try:
-                msg = await channel.fetch_message(msg_id)
-                await msg.delete()
-            except Exception:
-                pass
-        if keep_message_id:
-            setup_messages[guild_id] = [keep_message_id]
-        else:
-            setup_messages[guild_id] = []
+    """Delete old setup messages for a guild, optionally keeping one. Uses DB for persistence."""
+    # Load from DB
+    row = await d1_query("SELECT value FROM bot_meta WHERE key = ?", [f"setup_msgs_{guild_id}"])
+    stored = json.loads(row["results"][0]["value"]) if row["results"] else []
+
+    # Also merge any in-memory ones not yet flushed
+    mem = setup_messages.get(guild_id, [])
+    all_ids = list(set(stored + mem))
+
+    remaining = []
+    for msg_id in all_ids:
+        if keep_message_id and msg_id == keep_message_id:
+            remaining.append(msg_id)
+            continue
+        try:
+            msg = await channel.fetch_message(msg_id)
+            await msg.delete()
+        except Exception:
+            pass  # Already deleted or not found
+
+    # Update DB and memory
+    setup_messages[guild_id] = remaining
+    await d1_query(
+        "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+        [f"setup_msgs_{guild_id}", json.dumps(remaining)]
+    )
 
 
-def track_setup_message(guild_id: int, message_id: int):
-    """Track a setup message for later cleanup"""
+async def track_setup_message(guild_id: int, message_id: int):
+    """Track a setup message for later cleanup. Persists to DB."""
     if guild_id not in setup_messages:
         setup_messages[guild_id] = []
     setup_messages[guild_id].append(message_id)
+    # Persist to DB
+    await d1_query(
+        "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+        [f"setup_msgs_{guild_id}", json.dumps(setup_messages[guild_id])]
+    )
 
 
 # ── Database Raid Functions ──────────────────────────────────────────────────
@@ -554,7 +571,25 @@ async def end_raid_logic(guild: discord.Guild, raid: dict, final_wave: int, flag
             inline=False
         )
     
-    await send_raid_log(bot, log_embed)
+    duration_str = f"{int(duration // 60)}m {int(duration % 60)}s"
+    if flagged:
+        # Persist to DB so buttons survive restarts
+        await d1_query(
+            "INSERT OR REPLACE INTO flagged_raids (raid_id, guild_id, hosters, points_each, xp_each, final_wave, duration, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [raid_id, guild.id, json.dumps(list(raid["hosters"])), points_each, xp_each, final_wave, duration_str, datetime.now(timezone.utc).isoformat()]
+        )
+        approval_view = FlaggedApprovalView(
+            hosters=list(raid["hosters"]),
+            points_each=points_each,
+            final_wave=final_wave,
+            guild_id=guild.id,
+            raid_id=raid_id,
+            xp_total=xp_each,
+            duration=duration_str
+        )
+        await send_raid_log(bot, log_embed, view=approval_view)
+    else:
+        await send_raid_log(bot, log_embed)
 
 
 def schedule_raid_timeout(guild_id: int, bot: commands.Bot):
@@ -801,7 +836,7 @@ class StartRaidModal(discord.ui.Modal, title="Start Raid"):
         msg = await host_channel.send(embed=embed, view=view)
         
         # Track the message for cleanup
-        track_setup_message(guild_id, msg.id)
+        await track_setup_message(guild_id, msg.id)
 
         await interaction.followup.send("✅ Raid setup panel created! Check the channel.", ephemeral=True)
 
