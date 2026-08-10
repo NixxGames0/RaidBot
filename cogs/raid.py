@@ -1219,20 +1219,20 @@ class RaidSetupView(discord.ui.View):
             ctrl_embed.add_field(name="Auto-Timeout", value=f"{RAID_TIMEOUT_MINUTES} minutes", inline=True)
             ctrl_msg = await host_ch.send(embed=ctrl_embed, view=RaidControlView())
             raid["control_msg_id"] = ctrl_msg.id
+
+        # ─── Send the PS code as an ephemeral message in the control channel ──
+        # This replaces the old DM to host
+        await interaction.followup.send(
+            f"🔑 {interaction.user.mention} Your raid code: `{self.code}`\n"
+            "Keep this private! Share it only with your co-hosters.",
+            ephemeral=True
+        )
+
         schedule_raid_timeout(guild_id, interaction.client)
-        try:
-            host_member = interaction.guild.get_member(self.host_id)
-            if host_member:
-                code_embed = discord.Embed(
-                    title="⚔️ Your Raid Code",
-                    description=f"### `{self.code}`",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                code_embed.add_field(name="​", value="Keep this private! Share it only with your co-hosters.", inline=False)
-                await host_member.send(embed=code_embed)
-        except Exception as e:
-            print(f"Could not DM host their code: {e}")
+
+        # ─── We no longer DM the host the code ─────────────────────────────────
+        # (removed the DM block)
+
         log_embed = discord.Embed(
             title="⚔️ Raid Started",
             color=discord.Color.green(),
@@ -1347,7 +1347,6 @@ class RaidControlView(discord.ui.View):
                 "❌ Only hosters can update the wave.",
                 ephemeral=True
             )
-        # Safe modal sending
         if not interaction.response.is_done():
             await interaction.response.send_modal(UpdateWaveModal())
         else:
@@ -1370,7 +1369,6 @@ class RaidControlView(discord.ui.View):
                 "❌ Only hosters can end the raid.",
                 ephemeral=True
             )
-        # Safe modal sending
         if not interaction.response.is_done():
             await interaction.response.send_modal(WaveEndModal())
         else:
@@ -1421,6 +1419,7 @@ class HosterInviteView(discord.ui.View):
             "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
             ephemeral=True
         )
+        # DM the co-hoster the code if the raid is already active
         try:
             raid = raids.get(self.guild_id)
             invitee = interaction.client.get_user(self.invitee_id)
