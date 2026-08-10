@@ -351,7 +351,8 @@ COGS = [
     "cogs.shop",
     "cogs.logger",
     "cogs.custom_roles",
-    "cogs.giveaway",  # new giveaway cog
+    "cogs.giveaway",
+    "cogs.afk",
 ]
 
 
