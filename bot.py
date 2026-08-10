@@ -311,6 +311,7 @@ COGS = [
     "cogs.ticket",
     "cogs.shop",
     "cogs.logger",
+    "cogs.custom_roles",
 ]
 
 

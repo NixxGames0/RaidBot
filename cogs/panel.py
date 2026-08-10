@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 # Import shared functions from bot.py
 from bot import (
-    d1_query, 
+    d1_query,
     GUILD_ID,
     FOUNDER_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
@@ -30,6 +30,9 @@ TICKET_PANEL_CHANNEL_ID = 1535906243435040788
 SHOP_PANEL_CHANNEL_ID = 1535562484788891658
 RAID_GATE_CHANNEL_ID = 1535561934534082610
 RULES_CHANNEL_ID = 1535979621193883648
+
+# ── Import custom role panel builder ─────────────────────────────────────
+from cogs.custom_roles import CUSTOM_ROLE_CHANNEL_ID, build_custom_role_panel
 
 # ── Staff Roles ──────────────────────────────────────────────────────────────
 STAFF_ROLES = {FOUNDER_ROLE_ID, HEAD_STAFF_ROLE_ID, MOD_ROLE_ID, TRIAL_MOD_ROLE_ID}
@@ -328,6 +331,15 @@ class Panel(commands.Cog):
             except Exception as e:
                 print(f"Could not register Shop Panel view: {e}")
 
+            # Register Custom Role Panel View
+            try:
+                from cogs.custom_roles import CustomRolePanelView
+                custom_view = CustomRolePanelView()
+                self.bot.add_view(custom_view)
+                print("✅ Registered persistent Custom Role Panel view")
+            except Exception as e:
+                print(f"Could not register Custom Role Panel view: {e}")
+
             print("✅ All persistent views registered")
 
         except Exception as e:
@@ -362,6 +374,7 @@ class Panel(commands.Cog):
             shop_channel = self.bot.get_channel(SHOP_PANEL_CHANNEL_ID)
             gate_channel = self.bot.get_channel(RAID_GATE_CHANNEL_ID)
             rules_channel = self.bot.get_channel(RULES_CHANNEL_ID)
+            custom_channel = self.bot.get_channel(CUSTOM_ROLE_CHANNEL_ID)
 
             missing = []
             if not ps_channel:
@@ -378,6 +391,8 @@ class Panel(commands.Cog):
                 missing.append("Raid Gate")
             if not rules_channel:
                 missing.append("Rules Channel")
+            if not custom_channel:
+                missing.append("Custom Role Panel")
 
             if missing:
                 return await interaction.followup.send(
@@ -393,6 +408,7 @@ class Panel(commands.Cog):
             await shop_channel.purge(limit=1000, check=lambda m: not m.pinned)
             await gate_channel.purge(limit=1000, check=lambda m: not m.pinned)
             await rules_channel.purge(limit=1000, check=lambda m: not m.pinned)
+            await custom_channel.purge(limit=1000, check=lambda m: not m.pinned)
 
             # ── Send Rules Panel ──────────────────────────────────────────────
             rules_embed = discord.Embed(
@@ -751,6 +767,11 @@ class Panel(commands.Cog):
 
             await shop_channel.send(embed=shop_embed, view=shop_view)
 
+            # ── Send Custom Role Panel ──────────────────────────────────────
+            custom_embed, custom_view = build_custom_role_panel()
+            self.bot.add_view(custom_view)
+            await custom_channel.send(embed=custom_embed, view=custom_view)
+
             # ── Check for Active Raid ────────────────────────────────────────
             # Import raid functions only when needed
             from cogs.raid import get_raid, get_active_raid_from_db, RaidControlView, JoinRaidView, build_gate_embed
@@ -807,6 +828,7 @@ class Panel(commands.Cog):
             log_embed.add_field(name="Raid Panel", value=f"<#{RAID_PANEL_CHANNEL_ID}>", inline=True)
             log_embed.add_field(name="Ticket Panel", value=f"<#{TICKET_PANEL_CHANNEL_ID}>", inline=True)
             log_embed.add_field(name="Shop Panel", value=f"<#{SHOP_PANEL_CHANNEL_ID}>", inline=True)
+            log_embed.add_field(name="Custom Role Panel", value=f"<#{CUSTOM_ROLE_CHANNEL_ID}>", inline=True)
             if active_raid:
                 log_embed.add_field(name="Active Raid", value=f"`{active_raid['raid_id']}`", inline=True)
             await send_log(self.bot, log_embed)
