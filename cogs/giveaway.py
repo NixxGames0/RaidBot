@@ -24,7 +24,7 @@ from bot import (
 GIVEAWAY_HOST_ROLE_ID = 1536325001584578621
 GIVEAWAY_PING_ROLE_ID = 1536324869422063626
 GIVEAWAY_LOG_CHANNEL_ID = 1536329270354378783
-TICKET_CATEGORY_ID = 1535905899854430222  # Reuse existing ticket category
+TICKET_CATEGORY_ID = 1535905899854430222
 
 # ─── Database setup ─────────────────────────────────────────
 async def init_giveaway_db():
@@ -47,6 +47,18 @@ async def init_giveaway_db():
             entrants TEXT DEFAULT '[]',
             status TEXT DEFAULT 'active',
             last_reroll TEXT
+        )"""
+    )
+    # Giveaway tickets table (for delivery tracking)
+    await d1_query(
+        """CREATE TABLE IF NOT EXISTS giveaway_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT NOT NULL,
+            giveaway_id TEXT NOT NULL,
+            winner_id TEXT NOT NULL,
+            status TEXT DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            closed_at TEXT
         )"""
     )
     for col_sql in [
@@ -110,7 +122,79 @@ def format_duration(seconds: int) -> str:
     return " ".join(parts) if parts else "0m"
 
 
-# ─── Ticket creation helper ───────────────────────────────
+# ─── Ticket Views ───────────────────────────────────────────
+class GiveawayTicketControlView(discord.ui.View):
+    def __init__(self, channel_id: int, giveaway_id: str, winner_id: int, host_id: int):
+        super().__init__(timeout=None)
+        self.channel_id = channel_id
+        self.giveaway_id = giveaway_id
+        self.winner_id = winner_id
+        self.host_id = host_id
+
+    @discord.ui.button(label="✅ Delivered", style=discord.ButtonStyle.success, custom_id="giveaway_ticket_deliver")
+    async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Permissions: host, Head Staff, or Founder
+        allowed = (interaction.user.id == self.host_id or
+                   any(role.id in (HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID) for role in interaction.user.roles))
+        if not allowed:
+            return await interaction.response.send_message("❌ Only the host or Head Staff can mark as delivered.", ephemeral=True)
+
+        # Confirm
+        await interaction.response.send_message(
+            "⚠️ Are you sure the prize has been delivered? This will delete the ticket channel.",
+            view=ConfirmDeliverView(self.channel_id, self.giveaway_id),
+            ephemeral=True
+        )
+
+
+class ConfirmDeliverView(discord.ui.View):
+    def __init__(self, channel_id: int, giveaway_id: str):
+        super().__init__(timeout=60)
+        self.channel_id = channel_id
+        self.giveaway_id = giveaway_id
+
+    @discord.ui.button(label="Yes, deliver", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        channel = interaction.guild.get_channel(self.channel_id)
+        if channel:
+            try:
+                await channel.delete(reason=f"Giveaway {self.giveaway_id} delivered")
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to delete channel: {e}", ephemeral=True)
+                return
+
+        # Update DB status
+        now = datetime.now(timezone.utc).isoformat()
+        await d1_query(
+            "UPDATE giveaway_tickets SET status = 'closed', closed_at = ? WHERE channel_id = ?",
+            [now, str(self.channel_id)]
+        )
+
+        await interaction.followup.send("✅ Prize marked as delivered. Ticket channel deleted.", ephemeral=True)
+
+        # Log
+        embed = discord.Embed(
+            title="📦 Giveaway Prize Delivered",
+            color=discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Giveaway ID", value=self.giveaway_id, inline=True)
+        embed.add_field(name="Channel", value=f"<#{self.channel_id}>", inline=True)
+        embed.add_field(name="Marked by", value=interaction.user.mention, inline=True)
+        await log_giveaway(interaction.client, embed)
+        await send_log(interaction.client, embed)
+
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("✅ Delivery cancelled.", ephemeral=True)
+        self.stop()
+
+
+# ─── Ticket creation ────────────────────────────────────────
 async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaway_data: dict, winner_id: int):
     """Create a ticket channel for the giveaway winner."""
     category = guild.get_channel(TICKET_CATEGORY_ID)
@@ -122,11 +206,9 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     winner = guild.get_member(winner_id)
     sponsor_name = giveaway_data.get("sponsor") or "N/A"
 
-    # Build channel name
     winner_name = winner.display_name if winner else str(winner_id)
     channel_name = f"giveaway-{winner_name[:10]}-{giveaway_data['giveaway_id'][-4:]}".lower().replace(" ", "-")
 
-    # Permissions: only host, winner, Head Staff, bot
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -136,12 +218,10 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     if winner:
         overwrites[winner] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    # Add Head Staff role
     head_staff_role = guild.get_role(HEAD_STAFF_ROLE_ID)
     if head_staff_role:
         overwrites[head_staff_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    # Also add Giveaway Host role (if different from host)
     host_role = guild.get_role(GIVEAWAY_HOST_ROLE_ID)
     if host_role:
         overwrites[host_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
@@ -157,7 +237,14 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         print(f"Failed to create ticket channel: {e}")
         return
 
-    # Send the panel embed
+    # Store ticket in DB
+    now = datetime.now(timezone.utc).isoformat()
+    await d1_query(
+        "INSERT INTO giveaway_tickets (channel_id, giveaway_id, winner_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+        [str(channel.id), giveaway_data["giveaway_id"], str(winner_id), "open", now]
+    )
+
+    # Send the panel embed with the view
     embed = discord.Embed(
         title="🎉 Giveaway Ticket",
         description=f"**Giveaway:** {giveaway_data['name']}\n"
@@ -170,8 +257,14 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         color=discord.Color.gold(),
         timestamp=datetime.now(timezone.utc)
     )
-    embed.set_footer(text="Please discuss prize claiming and delivery here.")
-    await channel.send(embed=embed)
+    embed.set_footer(text="Click 'Delivered' when the prize has been claimed.")
+    view = GiveawayTicketControlView(
+        channel_id=channel.id,
+        giveaway_id=giveaway_data["giveaway_id"],
+        winner_id=winner_id,
+        host_id=int(giveaway_data["host_id"])
+    )
+    await channel.send(embed=embed, view=view)
 
     # Notify participants
     mention_parts = []
@@ -182,10 +275,52 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     if head_staff_role:
         mention_parts.append(head_staff_role.mention)
     if mention_parts:
-        await channel.send(f"{' '.join(mention_parts)} – Ticket opened for giveaway prize delivery.")
+        await channel.send(f"{' '.join(mention_parts)} – Ticket opened for prize delivery.")
 
 
-# ─── Views ──────────────────────────────────────────────────
+# ─── Restore tickets on startup ──────────────────────────
+async def restore_giveaway_tickets(bot: commands.Bot):
+    """Re-attach views to open giveaway tickets after bot restart."""
+    await bot.wait_until_ready()
+    rows = await d1_query(
+        "SELECT channel_id, giveaway_id, winner_id FROM giveaway_tickets WHERE status = 'open'"
+    )
+    restored = 0
+    for row in rows["results"]:
+        channel_id = int(row["channel_id"])
+        giveaway_id = row["giveaway_id"]
+        winner_id = int(row["winner_id"])
+        # Get host_id from giveaway
+        g_row = await d1_query(
+            "SELECT host_id FROM giveaways WHERE giveaway_id = ?",
+            [giveaway_id]
+        )
+        if not g_row["results"]:
+            continue
+        host_id = int(g_row["results"][0]["host_id"])
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            continue
+        # Search for the ticket message (the one with the embed)
+        try:
+            async for message in channel.history(limit=50):
+                if message.author == bot.user and message.embeds:
+                    if message.embeds and message.embeds[0].title and "Giveaway Ticket" in message.embeds[0].title:
+                        view = GiveawayTicketControlView(
+                            channel_id=channel_id,
+                            giveaway_id=giveaway_id,
+                            winner_id=winner_id,
+                            host_id=host_id
+                        )
+                        await message.edit(view=view)
+                        restored += 1
+                        break
+        except Exception as e:
+            print(f"Error restoring giveaway ticket {giveaway_id}: {e}")
+    print(f"✅ Restored {restored} giveaway ticket views.")
+
+
+# ─── Bonus Entry Views ────────────────────────────────────
 class BonusEntryModal(discord.ui.Modal, title="Add Bonus Entry"):
     def __init__(self, builder_view: "GiveawayBuilderView"):
         super().__init__()
@@ -261,6 +396,7 @@ class RemoveBonusView(discord.ui.View):
             await interaction.response.send_message("❌ Role not found.", ephemeral=True)
 
 
+# ─── Giveaway Builder View ─────────────────────────────────
 class GiveawayBuilderView(discord.ui.View):
     def __init__(self, bot: commands.Bot, user_id: int, mode: str = "create", giveaway_data: dict = None, interaction: discord.Interaction = None):
         super().__init__(timeout=300)
@@ -811,11 +947,16 @@ class Giveaway(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.loop.create_task(self.init_db())
+        self.bot.loop.create_task(self.restore_tickets())
         self.check_expired_giveaways.start()
 
     async def init_db(self):
         await self.bot.wait_until_ready()
         await init_giveaway_db()
+
+    async def restore_tickets(self):
+        await self.bot.wait_until_ready()
+        await restore_giveaway_tickets(self.bot)
 
     def cog_unload(self):
         self.check_expired_giveaways.cancel()
@@ -871,7 +1012,7 @@ class Giveaway(commands.Cog):
             [json.dumps([winner_id]), giveaway_id]
         )
 
-        # Update embed – show ended early if applicable
+        # Update embed
         await self.update_giveaway_embed(giveaway_id, winner_id=winner_id, early=early)
 
         # Create ticket for the winner
@@ -893,7 +1034,7 @@ class Giveaway(commands.Cog):
         except:
             pass
 
-        # Ping the giveaway ping role in the original channel with winner
+        # Ping ping role
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
         channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel and ping_role:
@@ -957,7 +1098,6 @@ class Giveaway(commands.Cog):
             )
             embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
         else:
-            # Still active
             embed = discord.Embed(
                 title=f"🎉 {data['name']}",
                 description=f"**Prize:** {data['prize']}\n"
@@ -1072,7 +1212,6 @@ class Giveaway(commands.Cog):
         if row["results"][0]["status"] != "active":
             return await interaction.response.send_message("❌ This giveaway is not active.", ephemeral=True)
 
-        # Pass early=True to indicate manual early end
         await self.end_giveaway(giveaway_id, auto=False, early=True, interaction=interaction)
         await interaction.response.send_message(f"✅ Giveaway `{giveaway_id}` ended early.", ephemeral=True)
 
