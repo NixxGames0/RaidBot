@@ -67,7 +67,7 @@ pending_verifications = {}
 pending_game_verifications = {}
 
 # ── RHVerif Game Info ────────────────────────────────────────────────────────
-RHVERIF_GAME_URL = "https://www.roblox.com/games/77181424740709/RHVerif"
+RHVERIF_GAME_URL = "https://www.roblox.com/games/start?placeId=77181424740709"
 RHVERIF_GAME_NAME = "RHVerif"
 
 
