@@ -51,8 +51,8 @@ async def delete_custom_role_entry(user_id: int):
 class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
     name = discord.ui.TextInput(
         label="Role Name",
-        placeholder="Max 16 characters",
-        max_length=16,
+        placeholder="Max 50 characters",
+        max_length=50,
         required=True
     )
     color = discord.ui.TextInput(
@@ -143,8 +143,8 @@ class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
         super().__init__()
         self.name = discord.ui.TextInput(
             label="Role Name",
-            placeholder="Max 16 characters",
-            max_length=16,
+            placeholder="Max 50 characters",
+            max_length=50,
             required=True,
             default=current_name
         )
@@ -364,7 +364,7 @@ def build_custom_role_panel():
     embed.add_field(
         name="Instructions",
         value=(
-            "🆕 **Create** – set a name (max 16 chars) and a hex colour.\n"
+            "🆕 **Create** – set a name (max 50 chars) and a hex colour.\n"
             "✏️ **Edit** – change the name or colour.\n"
             "👁️ **Preview** – see how your role looks.\n"
             "🗑️ **Delete** – remove your role."
