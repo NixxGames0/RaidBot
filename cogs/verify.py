@@ -660,12 +660,15 @@ class ManualVerifyView(discord.ui.View):
                 ephemeral=True
             )
 
+        # Store the button message so DenyReasonModal can edit it
+        self._deny_message = interaction.message
         # Show modal for denial reason
         await interaction.response.send_modal(DenyReasonModal(
             user_id=self.user_id,
             roblox_name=self.roblox_name,
             roblox_id=self.roblox_id,
-            original_interaction=self.original_interaction
+            original_interaction=self.original_interaction,
+            view=self
         ))
 
 
@@ -679,12 +682,13 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Verification"):
     )
 
     def __init__(self, user_id: int, roblox_name: str, roblox_id: int,
-                 original_interaction: discord.Interaction):
+                 original_interaction: discord.Interaction, view=None):
         super().__init__()
         self.user_id = user_id
         self.roblox_name = roblox_name
         self.roblox_id = roblox_id
         self.original_interaction = original_interaction
+        self._view = view
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -692,30 +696,22 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Verification"):
         # Get the user
         user = interaction.guild.get_member(self.user_id)
 
-        # Update the original message
-        channel = interaction.client.get_channel(MANUAL_VERIFY_CHANNEL_ID)
-        if channel:
-            async for msg in channel.history(limit=50):
-                if msg.embeds and msg.embeds[0].title == "⚠️ Manual Verification Required":
-                    # Check if it has our user ID
-                    for field in msg.embeds[0].fields:
-                        if field.name == "User" and f"<@{self.user_id}>" in field.value:
-                            embed = msg.embeds[0]
-                            embed.color = discord.Color.red()
-                            embed.add_field(
-                                name="❌ Denied",
-                                value=f"Denied by {interaction.user.mention}\n**Reason:** {self.reason.value}",
-                                inline=False
-                            )
-
-                            # Disable buttons
-                            for child in msg.components:
-                                if hasattr(child, "children"):
-                                    for button in child.children:
-                                        button.disabled = True
-
-                            await msg.edit(embed=embed, view=msg.components[0])
-                            break
+        # Update the original message directly via stored view reference
+        if self._view and hasattr(self._view, "_deny_message") and self._view._deny_message:
+            msg = self._view._deny_message
+            embed = msg.embeds[0]
+            embed.color = discord.Color.red()
+            embed.add_field(
+                name="❌ Denied",
+                value=f"Denied by {interaction.user.mention}\n**Reason:** {self.reason.value}",
+                inline=False
+            )
+            self._view.approve_button.disabled = True
+            self._view.deny_button.disabled = True
+            try:
+                await msg.edit(embed=embed, view=self._view)
+            except Exception as e:
+                print(f"⚠️ Could not edit deny message: {e}")
 
         # DM the user
         if user:
@@ -796,6 +792,19 @@ class VerifyConfirmView(discord.ui.View):
 
         # Remove pending verification
         del pending_verifications[self.user_id]
+
+        # Check if flagged NOW (after code confirmed in bio)
+        is_flagged, flags = await check_account_flagged(roblox_id)
+        if is_flagged:
+            await send_manual_verification(
+                interaction.client,
+                interaction,
+                interaction.user,
+                roblox_name,
+                roblox_id,
+                flags
+            )
+            return
 
         # Finalize verification
         await finalize_verification(
@@ -968,20 +977,6 @@ class VerifyModal(discord.ui.Modal, title="Verify Your Roblox Account"):
                     f"❌ `{roblox_name}` is already linked to another account.",
                     ephemeral=True
                 )
-
-        # Check if account is flagged
-        is_flagged, flags = await check_account_flagged(roblox_id)
-
-        if is_flagged:
-            await send_manual_verification(
-                interaction.client,
-                interaction,
-                interaction.user,
-                roblox_name,
-                roblox_id,
-                flags
-            )
-            return
 
         # Normal verification flow
         code = generate_verification_code()
