@@ -158,25 +158,26 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
 
     emoji_name = f"role_{basename}"
 
-    # ─── Check if we already have a stored emoji ──────────────────────────
+    # ─── 1. Check by name (prevents duplicates) ───────────────────────────
+    existing = discord.utils.get(guild.emojis, name=emoji_name)
+    if existing:
+        # Found by name – reuse it and store its ID (if not already stored)
+        await store_emoji_id(basename, existing.id)
+        logger.info(f"✅ Reusing existing emoji '{emoji_name}' (ID: {existing.id})")
+        return existing
+
+    # ─── 2. Check stored ID (in case emoji was renamed, but name check failed) ──
     stored_id = await get_stored_emoji_id(basename)
     if stored_id:
         existing = discord.utils.get(guild.emojis, id=stored_id)
         if existing and existing.name == emoji_name:
-            # Emoji exists and matches – return it
             logger.info(f"✅ Using existing emoji '{emoji_name}' (ID: {stored_id})")
             return existing
+        else:
+            # Stored ID is stale – clear it
+            await store_emoji_id(basename, None)
 
-    # ─── Delete any emoji with the same name (stale) ──────────────────────
-    existing = discord.utils.get(guild.emojis, name=emoji_name)
-    if existing:
-        try:
-            await existing.delete(reason="Refreshing role emoji")
-            logger.info(f"🗑️ Deleted stale emoji '{emoji_name}'")
-        except Exception as e:
-            logger.warning(f"Could not delete emoji {emoji_name}: {e}")
-
-    # ─── Generate and upload new emoji ────────────────────────────────────
+    # ─── 3. Upload new emoji ──────────────────────────────────────────────
     try:
         image_data = generate_gradient_image(AVAILABLE_ICONS[basename], color)
     except Exception as e:
@@ -189,7 +190,6 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
             reason=f"Generated emoji for role colour #{color.value:06x}"
         )
         logger.info(f"✅ Uploaded emoji '{emoji_name}' for colour #{color.value:06x}")
-        # Store the new ID
         await store_emoji_id(basename, emoji.id)
         return emoji
     except discord.Forbidden:
@@ -230,7 +230,7 @@ async def safe_respond(interaction, *args, **kwargs):
         pass
 
 
-# ─── Role Builder Views (unchanged) ──────────────────────
+# ─── Role Builder Views ────────────────────────────────────
 class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
         super().__init__(timeout=300)
