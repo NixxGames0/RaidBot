@@ -192,9 +192,6 @@ class ConfirmDeliverView(discord.ui.View):
 # ─── Ticket creation ────────────────────────────────────────
 async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaway_data: dict, winner_id: int):
     """Create a ticket channel for the giveaway winner."""
-    # Log that we are attempting to create a ticket
-    print(f"📢 Attempting to create ticket for giveaway {giveaway_data['giveaway_id']}, winner {winner_id}")
-
     category = guild.get_channel(TICKET_CATEGORY_ID)
     if category:
         print(f"✅ Found ticket category {category.name} ({category.id})")
@@ -262,7 +259,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         )
     except Exception as e:
         print(f"❌ Failed to insert ticket into DB: {e}")
-        # Delete the channel if we can't track it
         try:
             await channel.delete(reason="Failed to insert ticket into DB")
         except:
@@ -305,7 +301,6 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
 
 # ─── Restore tickets on startup ──────────────────────────
 async def restore_giveaway_tickets(bot: commands.Bot):
-    """Re-attach views to open giveaway tickets after bot restart."""
     await bot.wait_until_ready()
     await asyncio.sleep(2)
 
@@ -1153,30 +1148,35 @@ class Giveaway(commands.Cog):
     @app_commands.command(name="sgiveaway", description="Start a new giveaway (Requires Giveaway Host role)")
     @app_commands.checks.cooldown(1, 10)
     async def sgiveaway(self, interaction: discord.Interaction):
+        # Defer early to avoid timeout
+        await interaction.response.defer(ephemeral=True)
+
         if not any(role.id == GIVEAWAY_HOST_ROLE_ID for role in interaction.user.roles) and not is_founder(interaction.user):
-            return await interaction.response.send_message("❌ You need the Giveaway Host role to create giveaways.", ephemeral=True)
+            return await interaction.followup.send("❌ You need the Giveaway Host role to create giveaways.", ephemeral=True)
 
         view = GiveawayBuilderView(self.bot, interaction.user.id, mode="create", interaction=interaction)
         embed = view.build_embed()
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="egiveaway", description="Edit an existing giveaway")
     @app_commands.describe(giveaway_id="The giveaway ID to edit")
     @app_commands.checks.cooldown(1, 10)
     async def egiveaway(self, interaction: discord.Interaction, giveaway_id: str):
+        await interaction.response.defer(ephemeral=True)
+
         row = await d1_query(
             "SELECT host_id, name, sponsor, prize, required_role_id, bonus_entries, status FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
-            return await interaction.response.send_message("❌ Giveaway not found.", ephemeral=True)
+            return await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
         data = row["results"][0]
         if data["status"] != "active":
-            return await interaction.response.send_message("❌ This giveaway is not active (ended/cancelled).", ephemeral=True)
+            return await interaction.followup.send("❌ This giveaway is not active (ended/cancelled).", ephemeral=True)
 
         host_id = int(data["host_id"])
         if interaction.user.id != host_id and not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message("❌ You don't have permission to edit this giveaway.", ephemeral=True)
+            return await interaction.followup.send("❌ You don't have permission to edit this giveaway.", ephemeral=True)
 
         row2 = await d1_query("SELECT created_at, end_time FROM giveaways WHERE giveaway_id = ?", [giveaway_id])
         if row2["results"]:
@@ -1197,7 +1197,7 @@ class Giveaway(commands.Cog):
         }
         view = GiveawayBuilderView(self.bot, interaction.user.id, mode="edit", giveaway_data=builder_data, interaction=interaction)
         embed = view.build_embed()
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="giveaways", description="List all active giveaways")
     @app_commands.checks.cooldown(1, 10)
@@ -1231,38 +1231,43 @@ class Giveaway(commands.Cog):
     @app_commands.describe(giveaway_id="The giveaway ID to end")
     @app_commands.checks.cooldown(1, 10)
     async def endgiveaway(self, interaction: discord.Interaction, giveaway_id: str):
+        # Defer early
+        await interaction.response.defer(ephemeral=True)
+
         if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message("❌ Only Head Staff and Founder can end giveaways.", ephemeral=True)
+            return await interaction.followup.send("❌ Only Head Staff and Founder can end giveaways.", ephemeral=True)
 
         row = await d1_query(
             "SELECT status FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
-            return await interaction.response.send_message("❌ Giveaway not found.", ephemeral=True)
+            return await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
         if row["results"][0]["status"] != "active":
-            return await interaction.response.send_message("❌ This giveaway is not active.", ephemeral=True)
+            return await interaction.followup.send("❌ This giveaway is not active.", ephemeral=True)
 
         await self.end_giveaway(giveaway_id, auto=False, early=True, interaction=interaction)
-        await interaction.response.send_message(f"✅ Giveaway `{giveaway_id}` ended early.", ephemeral=True)
+        await interaction.followup.send(f"✅ Giveaway `{giveaway_id}` ended early.", ephemeral=True)
 
     @app_commands.command(name="reroll", description="Reroll a winner for an ended giveaway")
     @app_commands.describe(giveaway_id="The giveaway ID to reroll")
     @app_commands.checks.cooldown(1, 10)
     async def reroll(self, interaction: discord.Interaction, giveaway_id: str):
+        await interaction.response.defer(ephemeral=True)
+
         row = await d1_query(
             "SELECT host_id, status, winner_ids, entrants, bonus_entries, name, prize FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
         )
         if not row["results"]:
-            return await interaction.response.send_message("❌ Giveaway not found.", ephemeral=True)
+            return await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
         data = row["results"][0]
         if data["status"] != "ended":
-            return await interaction.response.send_message("❌ Giveaway must be ended before rerolling.", ephemeral=True)
+            return await interaction.followup.send("❌ Giveaway must be ended before rerolling.", ephemeral=True)
 
         host_id = int(data["host_id"])
         if interaction.user.id != host_id and not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message("❌ You don't have permission to reroll this giveaway.", ephemeral=True)
+            return await interaction.followup.send("❌ You don't have permission to reroll this giveaway.", ephemeral=True)
 
         last_reroll_row = await d1_query(
             "SELECT last_reroll FROM giveaways WHERE giveaway_id = ?",
@@ -1272,16 +1277,16 @@ class Giveaway(commands.Cog):
             last = datetime.fromisoformat(last_reroll_row["results"][0]["last_reroll"])
             if datetime.now(timezone.utc) - last < timedelta(minutes=60):
                 remaining = 60 - (datetime.now(timezone.utc) - last).seconds // 60
-                return await interaction.response.send_message(f"⏳ Reroll cooldown. Please wait {remaining} minutes.", ephemeral=True)
+                return await interaction.followup.send(f"⏳ Reroll cooldown. Please wait {remaining} minutes.", ephemeral=True)
 
         entrants = json.loads(data["entrants"])
         if not entrants:
-            return await interaction.response.send_message("❌ No entrants to reroll.", ephemeral=True)
+            return await interaction.followup.send("❌ No entrants to reroll.", ephemeral=True)
 
         previous_winners = json.loads(data["winner_ids"]) if data["winner_ids"] else []
         available = [uid for uid in entrants if uid not in previous_winners]
         if not available:
-            return await interaction.response.send_message("❌ No new entrants to reroll.", ephemeral=True)
+            return await interaction.followup.send("❌ No new entrants to reroll.", ephemeral=True)
 
         weights = []
         bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
@@ -1332,7 +1337,7 @@ class Giveaway(commands.Cog):
         await log_giveaway(self.bot, embed)
         await send_log(self.bot, embed)
 
-        await interaction.response.send_message(f"✅ New winner: {winner_mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ New winner: {winner_mention}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
