@@ -105,9 +105,11 @@ class AFK(commands.Cog):
         user = interaction.user
         guild = interaction.guild
 
+        # Check if already AFK
         afk_data = await get_afk(user.id)
         if afk_data:
             await set_afk(user.id, note or "", afk_data["original_nick"])
+            # Try to update nickname again (in case permissions changed)
             await self._set_afk_nickname(user, afk_data["original_nick"])
             await interaction.response.send_message(
                 f"✅ Updated your AFK status. You are still marked as AFK.",
@@ -117,7 +119,7 @@ class AFK(commands.Cog):
 
         original_nick = user.nick
         await set_afk(user.id, note or "", original_nick)
-        await self._set_afk_nickname(user, original_nick)
+        nickname_updated = await self._set_afk_nickname(user, original_nick)
 
         embed = discord.Embed(
             title="✅ You are now AFK",
@@ -125,8 +127,34 @@ class AFK(commands.Cog):
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc)
         )
+        if not nickname_updated:
+            embed.add_field(
+                name="⚠️ Nickname Not Updated",
+                value="I couldn't change your nickname because my role is below yours. Your AFK status is still active, and I will reply to pings.\n\n**To fix this:** Move the bot's role above your highest role in the server settings.",
+                inline=False
+            )
         embed.set_footer(text="Type a message to return.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # If nickname wasn't updated, also DM the user a warning
+        if not nickname_updated:
+            try:
+                dm_embed = discord.Embed(
+                    title="⚠️ AFK Nickname Not Set",
+                    description=(
+                        "I couldn't add `[AFK]` to your nickname because my role is below yours.\n\n"
+                        "**To fix this:**\n"
+                        "1. Go to Server Settings → Roles\n"
+                        "2. Drag the bot's role **above** your highest role (e.g., Founder)\n"
+                        "3. Run `/afk` again to update your nickname\n\n"
+                        "Your AFK status is still active, and I will reply to anyone who pings you."
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                await user.send(embed=dm_embed)
+            except:
+                pass
 
         log_embed = discord.Embed(
             title="🔇 AFK Set",
@@ -135,11 +163,20 @@ class AFK(commands.Cog):
         )
         log_embed.add_field(name="User", value=user.mention, inline=True)
         log_embed.add_field(name="Note", value=note or "None", inline=True)
+        log_embed.add_field(name="Nickname Updated", value="✅" if nickname_updated else "❌", inline=True)
         await send_log(self.bot, log_embed)
 
-    async def _set_afk_nickname(self, member: discord.Member, original_nick: str = None):
+    async def _set_afk_nickname(self, member: discord.Member, original_nick: str = None) -> bool:
+        """Set AFK nickname, returns True if successful."""
         if not member.guild.me.guild_permissions.manage_nicknames:
-            return
+            logger.warning(f"No permission to manage nicknames for {member}")
+            return False
+
+        # Check if we can actually edit this member (they must be below bot's highest role)
+        if member.top_role >= member.guild.me.top_role:
+            logger.info(f"Cannot edit nickname for {member} – their top role is above or equal to bot's top role")
+            return False
+
         display_name = original_nick or member.display_name
         prefix = "[AFK] "
         max_len = 32
@@ -149,16 +186,24 @@ class AFK(commands.Cog):
         new_nick = prefix + display_name
         try:
             await member.edit(nick=new_nick, reason="AFK status")
+            return True
         except Exception as e:
             logger.warning(f"Failed to set AFK nickname for {member}: {e}")
+            return False
 
-    async def _restore_nickname(self, member: discord.Member, original_nick: str = None):
+    async def _restore_nickname(self, member: discord.Member, original_nick: str = None) -> bool:
+        """Restore original nickname, returns True if successful."""
         if not member.guild.me.guild_permissions.manage_nicknames:
-            return
+            return False
+        if member.top_role >= member.guild.me.top_role:
+            # We can't edit this member anyway
+            return False
         try:
             await member.edit(nick=original_nick, reason="AFK removed")
+            return True
         except Exception as e:
             logger.warning(f"Failed to restore nickname for {member}: {e}")
+            return False
 
     @app_commands.command(name="afklist", description="List all users currently AFK")
     @app_commands.checks.cooldown(1, 10)
