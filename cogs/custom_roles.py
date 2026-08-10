@@ -232,6 +232,61 @@ async def safe_respond(interaction, *args, **kwargs):
         pass
 
 
+# ─── Icon Selection View ──────────────────────────────────
+class IconSelectView(discord.ui.View):
+    def __init__(self, builder_view: 'RoleBuilderView', timeout: float = 120.0):
+        super().__init__(timeout=timeout)
+        self.builder_view = builder_view
+        self.add_item(self._create_select())
+
+    def _create_select(self) -> discord.ui.Select:
+        options = []
+        for name in sorted(AVAILABLE_ICONS.keys()):
+            options.append(
+                discord.SelectOption(
+                    label=name,
+                    value=name,
+                    description=f"Use icon '{name}'",
+                )
+            )
+        # Add a "None" option to clear icon
+        options.append(
+            discord.SelectOption(
+                label="None",
+                value="none",
+                description="Remove the current icon",
+            )
+        )
+        return discord.ui.Select(
+            placeholder="Choose an icon for your role...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only the user who opened the builder can use this
+        return interaction.user.id == self.builder_view.user_id
+
+    @discord.ui.select(
+        placeholder="Choose an icon...",
+        min_values=1,
+        max_values=1,
+        options=[],
+    )
+    async def icon_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        selected = select.values[0]
+        if selected == "none":
+            self.builder_view.data["icon"] = None
+        else:
+            self.builder_view.data["icon"] = selected
+        # Refresh the builder embed
+        await self.builder_view.update_embed(interaction)
+        # Delete this icon selection message
+        await interaction.message.delete()
+        self.stop()
+
+
 # ─── Role Builder Views ────────────────────────────────────
 class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
@@ -290,7 +345,14 @@ class RoleBuilderView(discord.ui.View):
 
     @discord.ui.button(label="Change Icon", style=discord.ButtonStyle.primary)
     async def change_icon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(IconModal(self))
+        # Send a followup ephemeral with the icon dropdown
+        view = IconSelectView(self)
+        embed = discord.Embed(
+            title="Choose an Icon",
+            description="Select an icon from the dropdown below to set as your role's icon.",
+            color=discord.Color.blurple()
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Apply Changes", style=discord.ButtonStyle.success)
     async def apply_changes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -455,30 +517,6 @@ class ColorModal(discord.ui.Modal, title="Change Role Color"):
         await self.view.update_embed(interaction)
 
 
-class IconModal(discord.ui.Modal, title="Change Role Icon"):
-    def __init__(self, view: RoleBuilderView):
-        super().__init__()
-        self.view = view
-        self.icon_input = discord.ui.TextInput(
-            label="Icon Name",
-            placeholder=f"Available: {', '.join(AVAILABLE_ICONS.keys())}",
-            required=False,
-            max_length=30,
-            default=view.data["icon"] or ""
-        )
-        self.add_item(self.icon_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        icon_name = self.icon_input.value.strip().lower()
-        if icon_name and icon_name not in AVAILABLE_ICONS:
-            return await interaction.response.send_message(
-                f"❌ Icon '{icon_name}' not found. Available: {', '.join(AVAILABLE_ICONS.keys())}",
-                ephemeral=True
-            )
-        self.view.data["icon"] = icon_name or None
-        await self.view.update_embed(interaction)
-
-
 # ─── Panel View ────────────────────────────────────────────
 class CustomRolePanelView(discord.ui.View):
     def __init__(self):
@@ -499,10 +537,8 @@ class CustomRolePanelView(discord.ui.View):
                 return await interaction.response.send_message("❌ Your custom role no longer exists.", ephemeral=True)
             # Get icon name from the emoji name (if any)
             icon_name = None
-            if role.icon:
-                # Try to extract from the emoji name (role_<name>)
-                if role.icon.name and role.icon.name.startswith("role_"):
-                    icon_name = role.icon.name[5:]  # remove "role_"
+            if role.icon and role.icon.name and role.icon.name.startswith("role_"):
+                icon_name = role.icon.name[5:]  # remove "role_"
             existing_data = {
                 "name": role.name,
                 "color": role.color,
