@@ -217,8 +217,8 @@ class Admin(commands.Cog):
     @app_commands.describe(query="@Discord user or Roblox username")
     @app_commands.checks.cooldown(1, 5)
     async def whois(self, interaction: discord.Interaction, query: str):
-        # Staff only
-        if not is_staff(interaction.user):
+        # Staff and Hosters
+        if not is_staff(interaction.user) and not is_hoster(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission to use this command.",
                 ephemeral=True
@@ -767,8 +767,8 @@ class Admin(commands.Cog):
     @app_commands.describe(user="The user to check")
     @app_commands.checks.cooldown(1, 5)
     async def blacklistinfo(self, interaction: discord.Interaction, user: discord.Member):
-        # Staff only
-        if not is_staff(interaction.user):
+        # Staff and Hosters
+        if not is_staff(interaction.user) and not is_hoster(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission to use this command.",
                 ephemeral=True

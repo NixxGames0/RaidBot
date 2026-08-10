@@ -249,6 +249,16 @@ async def init_database():
             )"""
         )
         await d1_query(
+            """CREATE TABLE IF NOT EXISTS flagged_raids (
+                raid_id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                hosters TEXT NOT NULL,
+                points_each INTEGER NOT NULL,
+                xp_each INTEGER NOT NULL,
+                final_wave INTEGER NOT NULL,
+                duration TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""",
             """CREATE TABLE IF NOT EXISTS invite_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invite_code TEXT NOT NULL UNIQUE,
@@ -351,76 +361,53 @@ class MyBot(commands.Bot):
         async def handle_roblox_callback(request):
             """Receives POST from Roblox game"""
             try:
-                raw_body = await request.text()
-                print(f"📥 Raw callback body: {raw_body}")
-
-                import json as _json
-                data = _json.loads(raw_body)
+                data = await request.json()
                 roblox_id = data.get('roblox_id')
                 roblox_name = data.get('roblox_name')
-
-                print(f"📦 Parsed: roblox_id={roblox_id!r} (type={type(roblox_id).__name__}), roblox_name={roblox_name!r}")
-
+                
                 if not roblox_id or not roblox_name:
                     return web.Response(status=400, text="Invalid payload")
-
-                # Normalize roblox_id to int always
-                roblox_id = int(roblox_id)
-
+                
                 print(f"🟢 Received verification from Roblox game: {roblox_name} (ID: {roblox_id})")
                 
                 # Process verification securely in the background
                 async def process_verify():
                     try:
-                        from cogs.verify import (
-                            pending_verifications,
-                            pending_game_verifications,
-                            finalize_verification,
-                            complete_game_verification,
-                        )
-
-                        # ── Check game-join verifications first ──────────────
-                        print(f"🔍 bot.py: pending_game_verifications has {len(pending_game_verifications)} entries")
-                        found_game = False
-                        for uid, data in list(pending_game_verifications.items()):
-                            if int(data.get('roblox_id', -1)) == roblox_id:
-                                print(f"🎮 Routing {roblox_name} to game verification handler.")
-                                await complete_game_verification(self, roblox_id, roblox_name)
-                                found_game = True
-                                break
-                        if found_game:
-                            return
-
-                        # ── Fall back: bio-code pending ───────────────────────
+                        from cogs.verify import pending_verifications, finalize_verification
+                        
                         discord_user_id = None
-                        for uid, data in list(pending_verifications.items()):
-                            if int(data.get('roblox_id', -1)) == roblox_id:
+                        # Find the Discord user waiting for this Roblox ID
+                        for uid, data in pending_verifications.items():
+                            if data.get('roblox_id') == roblox_id:
                                 discord_user_id = uid
                                 break
-
+                        
                         if not discord_user_id:
-                            print(f"⚠️ Roblox user {roblox_name} joined game, but no pending verification found.")
+                            print(f"⚠️ Roblox user {roblox_name} attempted verify, but no pending Discord request found.")
                             return
-
+                        
+                        # Remove from pending
                         del pending_verifications[discord_user_id]
-
+                        
+                        # Get the Discord Member
                         guild = self.get_guild(self.guild_id)
                         member = guild.get_member(int(discord_user_id))
-
+                        
                         if not member:
                             print(f"❌ Could not find Discord member {discord_user_id} in the guild.")
                             return
-
+                        
+                        # FINALIZE THE VERIFICATION!
                         await finalize_verification(
                             self,
-                            None,
+                            None, # No interaction (automated)
                             member,
                             roblox_name,
                             roblox_id,
                             manual=False
                         )
                         print(f"✅ Successfully auto-verified {roblox_name} -> {member.display_name}!")
-
+                        
                     except Exception as e:
                         print(f"❌ Error processing Roblox verification: {e}")
                 

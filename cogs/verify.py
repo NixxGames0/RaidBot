@@ -1570,9 +1570,12 @@ class Verify(commands.Cog):
         name="forceunverify",
         description="Force a user to reverify (Head Staff only)"
     )
-    @app_commands.describe(user="The user to force unverify")
+    @app_commands.describe(
+        user="The user to force unverify",
+        account="Specific Roblox username to remove (leave empty to remove all accounts)"
+    )
     @app_commands.checks.cooldown(1, 10)
-    async def forceunverify(self, interaction: discord.Interaction, user: discord.Member):
+    async def forceunverify(self, interaction: discord.Interaction, user: discord.Member, account: str = None):
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission. Only Founder and Head Staff can use this.",
@@ -1595,36 +1598,64 @@ class Verify(commands.Cog):
 
             roblox_users = json.loads(existing["results"][0]["roblox_users"] or "[]")
 
-            # Remove linked role
+            if account:
+                # Remove only the specified account
+                account = account.strip()
+                if account not in roblox_users:
+                    return await interaction.followup.send(
+                        f"❌ `{account}` is not linked to {user.mention}.\n"
+                        f"Linked accounts: {", ".join(f"`{r}`" for r in roblox_users) if roblox_users else "None"}",
+                        ephemeral=True
+                    )
+                roblox_users.remove(account)
+                removed_accounts = [account]
+                new_roblox_users = json.dumps(roblox_users)
+                # Only remove linked role if they have no accounts left
+                remove_role = len(roblox_users) == 0
+            else:
+                # Remove all accounts
+                removed_accounts = roblox_users
+                new_roblox_users = "[]"
+                remove_role = True
+
+            # Remove linked role if needed
             linked_role = interaction.guild.get_role(LINKED_ROLE_ID)
-            if linked_role and linked_role in user.roles:
+            if remove_role and linked_role and linked_role in user.roles:
                 await user.remove_roles(linked_role, reason=f"Forced unverify by {interaction.user}")
 
-            # Clear their linked accounts
+            # Update DB
             await d1_query(
-                "UPDATE users SET roblox_users = '[]', updated_at = ? WHERE discord_id = ?",
-                [datetime.now(timezone.utc).isoformat(), str(user.id)]
+                "UPDATE users SET roblox_users = ?, updated_at = ? WHERE discord_id = ?",
+                [new_roblox_users, datetime.now(timezone.utc).isoformat(), str(user.id)]
             )
 
             # Remove from pending verifications
             if str(user.id) in pending_verifications:
                 del pending_verifications[str(user.id)]
 
+            action_desc = f"Account `{removed_accounts[0]}` removed" if account else "All accounts removed — must reverify"
+
             embed = discord.Embed(
                 title="🔓 Force Unverify",
-                description=f"{user.mention} has been forced to reverify.",
+                description=f"{user.mention} — {action_desc}.",
                 color=discord.Color.red(),
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Removed By", value=interaction.user.mention, inline=True)
             embed.add_field(
-                name="Previously Linked Accounts",
-                value="\n".join([f"`{r}`" for r in roblox_users]) if roblox_users else "None",
+                name="Removed Accounts",
+                value="\n".join([f"`{r}`" for r in removed_accounts]) if removed_accounts else "None",
                 inline=False
             )
+            if roblox_users:  # remaining accounts after removal
+                embed.add_field(
+                    name="Remaining Accounts",
+                    value="\n".join([f"`{r}`" for r in roblox_users]),
+                    inline=False
+                )
             embed.add_field(
                 name="Next Steps",
-                value=f"{user.mention} must now use `/verify` to relink their Roblox account.",
+                value=f"{user.mention} must use `/startverification` to relink their Roblox account." if remove_role else f"Remaining accounts are still active.",
                 inline=False
             )
 

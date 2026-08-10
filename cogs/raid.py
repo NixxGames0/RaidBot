@@ -591,7 +591,8 @@ def update_raid_activity(guild_id: int):
 
 # ── Views ────────────────────────────────────────────────────────────────────
 class FlaggedApprovalView(discord.ui.View):
-    def __init__(self, hosters, points_each, final_wave, guild_id, raid_id, xp_total, duration):
+    def __init__(self, hosters=None, points_each=None, final_wave=None,
+                 guild_id=None, raid_id=None, xp_total=None, duration=None):
         super().__init__(timeout=None)
         self.hosters = hosters
         self.points_each = points_each
@@ -600,6 +601,26 @@ class FlaggedApprovalView(discord.ui.View):
         self.raid_id = raid_id
         self.xp_total = xp_total
         self.duration = duration
+
+    async def _load_from_db(self, raid_id: str):
+        """Load flagged raid data from DB if not already in memory (after restart)"""
+        if self.hosters is not None:
+            return True  # already loaded
+        row = await d1_query(
+            "SELECT * FROM flagged_raids WHERE raid_id = ?",
+            [raid_id]
+        )
+        if not row["results"]:
+            return False
+        r = row["results"][0]
+        self.hosters = json.loads(r["hosters"])
+        self.points_each = r["points_each"]
+        self.final_wave = r["final_wave"]
+        self.guild_id = r["guild_id"]
+        self.raid_id = r["raid_id"]
+        self.xp_total = r["xp_each"]
+        self.duration = r["duration"]
+        return True
 
     @discord.ui.button(label="Approve Points & XP", style=discord.ButtonStyle.success, emoji="✅", custom_id="flag_approve")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -611,6 +632,11 @@ class FlaggedApprovalView(discord.ui.View):
             )
 
         await interaction.response.defer()
+
+        # Reload data from DB if bot restarted since flag was set
+        raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
+        if not await self._load_from_db(raid_id or self.raid_id):
+            return await interaction.followup.send("❌ Flagged raid data not found in DB. It may have already been processed.", ephemeral=True)
 
         hoster_lines = []
         xp_lines = []
@@ -650,6 +676,9 @@ class FlaggedApprovalView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=None)
         await interaction.followup.send("✅ Raid approved and points awarded.", ephemeral=True)
 
+        # Remove from flagged_raids DB
+        await d1_query("DELETE FROM flagged_raids WHERE raid_id = ?", [self.raid_id])
+
         log_embed = discord.Embed(
             title="✅ Flagged Raid Approved",
             color=discord.Color.green(),
@@ -674,6 +703,11 @@ class FlaggedApprovalView(discord.ui.View):
 
         await interaction.response.defer()
 
+        # Reload data from DB if bot restarted
+        raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
+        if not await self._load_from_db(raid_id or self.raid_id):
+            return await interaction.followup.send("❌ Flagged raid data not found in DB. It may have already been processed.", ephemeral=True)
+
         embed = discord.Embed(
             title="🚫 Flagged Raid Denied",
             description="Points and XP were **not** awarded due to suspicious wave speed.",
@@ -689,6 +723,9 @@ class FlaggedApprovalView(discord.ui.View):
         self.stop()
         await interaction.message.edit(embed=embed, view=None)
         await interaction.followup.send("❌ Raid denied. No points awarded.", ephemeral=True)
+
+        # Remove from flagged_raids DB
+        await d1_query("DELETE FROM flagged_raids WHERE raid_id = ?", [self.raid_id])
 
         log_embed = discord.Embed(
             title="🚫 Flagged Raid Denied",
@@ -1165,6 +1202,11 @@ async def end_raid(interaction: discord.Interaction, final_wave: int):
         )
 
     if flagged:
+        # Persist flagged raid data to DB so buttons survive bot restarts
+        await d1_query(
+            "INSERT OR REPLACE INTO flagged_raids (raid_id, guild_id, hosters, points_each, xp_each, final_wave, duration, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [raid_id, guild_id, json.dumps(list(raid["hosters"])), points_each, xp_each, final_wave, duration_str, datetime.now(timezone.utc).isoformat()]
+        )
         approval_view = FlaggedApprovalView(
             hosters=list(raid["hosters"]),
             points_each=points_each,
@@ -1660,6 +1702,7 @@ class Raid(commands.Cog):
         bot.add_view(StartRaidPanelView())
         bot.add_view(JoinRaidView())
         bot.add_view(RaidControlView())
+        bot.add_view(FlaggedApprovalView())  # persistent flagged raid approval
         print("✅ Raid cog initialized")
 
     @app_commands.command(
