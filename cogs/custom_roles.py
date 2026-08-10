@@ -345,14 +345,14 @@ def build_custom_role_panel():
     embed.add_field(
         name="Instructions",
         value=(
-            "🆕 **Create** – set a name (max 16 chars) and a hex colour.\n"
-            "✏️ **Edit** – change the name or colour.\n"
+            "🆕 **Create** – set a name (max 16 chars) and a hex color.\n"
+            "✏️ **Edit** – change the name or color.\n"
             "👁️ **Preview** – see how your role looks.\n"
             "🗑️ **Delete** – remove your role."
         ),
         inline=False
     )
-    embed.set_footer(text="Role colours are cosmetic – they do not grant any permissions.")
+    embed.set_footer(text="Role colors are cosmetic – they do not grant any permissions.")
     view = CustomRolePanelView()
     return embed, view
 
