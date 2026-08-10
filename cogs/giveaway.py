@@ -28,6 +28,7 @@ TICKET_CATEGORY_ID = 1535905899854430222
 
 # ─── Database setup ─────────────────────────────────────────
 async def init_giveaway_db():
+    # Create main giveaways table
     await d1_query(
         """CREATE TABLE IF NOT EXISTS giveaways (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +50,7 @@ async def init_giveaway_db():
             last_reroll TEXT
         )"""
     )
-    # Giveaway tickets table (for delivery tracking)
+    # Create giveaway tickets table
     await d1_query(
         """CREATE TABLE IF NOT EXISTS giveaway_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +62,7 @@ async def init_giveaway_db():
             closed_at TEXT
         )"""
     )
+    # Try adding missing columns (safe to run)
     for col_sql in [
         "ALTER TABLE giveaways ADD COLUMN required_role_id TEXT",
         "ALTER TABLE giveaways ADD COLUMN last_reroll TEXT",
@@ -282,9 +284,32 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
 async def restore_giveaway_tickets(bot: commands.Bot):
     """Re-attach views to open giveaway tickets after bot restart."""
     await bot.wait_until_ready()
-    rows = await d1_query(
-        "SELECT channel_id, giveaway_id, winner_id FROM giveaway_tickets WHERE status = 'open'"
-    )
+    
+    # First, ensure the table exists (it should, but just in case)
+    try:
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS giveaway_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT NOT NULL,
+                giveaway_id TEXT NOT NULL,
+                winner_id TEXT NOT NULL,
+                status TEXT DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                closed_at TEXT
+            )"""
+        )
+    except Exception as e:
+        print(f"Error creating giveaway_tickets table: {e}")
+        return
+    
+    try:
+        rows = await d1_query(
+            "SELECT channel_id, giveaway_id, winner_id FROM giveaway_tickets WHERE status = 'open'"
+        )
+    except Exception as e:
+        print(f"Error querying giveaway_tickets: {e}")
+        return
+    
     restored = 0
     for row in rows["results"]:
         channel_id = int(row["channel_id"])
@@ -946,6 +971,7 @@ class GiveawayPublicView(discord.ui.View):
 class Giveaway(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # These tasks will run after the bot is ready
         self.bot.loop.create_task(self.init_db())
         self.bot.loop.create_task(self.restore_tickets())
         self.check_expired_giveaways.start()
@@ -956,6 +982,8 @@ class Giveaway(commands.Cog):
 
     async def restore_tickets(self):
         await self.bot.wait_until_ready()
+        # Wait a moment for the DB to be fully initialized
+        await asyncio.sleep(2)
         await restore_giveaway_tickets(self.bot)
 
     def cog_unload(self):
