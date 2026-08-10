@@ -192,6 +192,9 @@ class ConfirmDeliverView(discord.ui.View):
 # ─── Ticket creation ────────────────────────────────────────
 async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaway_data: dict, winner_id: int):
     """Create a ticket channel for the giveaway winner."""
+    # Log that we are attempting to create a ticket
+    print(f"📢 Attempting to create ticket for giveaway {giveaway_data['giveaway_id']}, winner {winner_id}")
+
     category = guild.get_channel(TICKET_CATEGORY_ID)
     if category:
         print(f"✅ Found ticket category {category.name} ({category.id})")
@@ -205,6 +208,7 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     winner_name = winner.display_name if winner else str(winner_id)
     channel_name = f"giveaway-{winner_name[:10]}-{giveaway_data['giveaway_id'][-4:]}".lower().replace(" ", "-")
 
+    # Build permission overrides
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -222,6 +226,7 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
     if host_role:
         overwrites[host_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
+    # Create the channel
     try:
         if category:
             channel = await guild.create_text_channel(
@@ -240,6 +245,12 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         print(f"✅ Created ticket channel {channel.name} ({channel.id})")
     except Exception as e:
         print(f"❌ Failed to create ticket channel: {e}")
+        # Send a message in the original giveaway channel about the failure
+        original_channel = guild.get_channel(int(giveaway_data["channel_id"]))
+        if original_channel:
+            await original_channel.send(
+                f"⚠️ Could not create a ticket for the winner. Please contact staff. (Error: {e})"
+            )
         return
 
     # Store ticket in DB
@@ -251,6 +262,11 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         )
     except Exception as e:
         print(f"❌ Failed to insert ticket into DB: {e}")
+        # Delete the channel if we can't track it
+        try:
+            await channel.delete(reason="Failed to insert ticket into DB")
+        except:
+            pass
         return
 
     # Send the panel embed with the view
@@ -291,7 +307,7 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
 async def restore_giveaway_tickets(bot: commands.Bot):
     """Re-attach views to open giveaway tickets after bot restart."""
     await bot.wait_until_ready()
-    await asyncio.sleep(2)  # ensure DB ready
+    await asyncio.sleep(2)
 
     try:
         rows = await d1_query(
@@ -334,7 +350,7 @@ async def restore_giveaway_tickets(bot: commands.Bot):
     print(f"✅ Restored {restored} giveaway ticket views.")
 
 
-# ─── Bonus Entry Views (unchanged) ──────────────────────
+# ─── Bonus Entry Views ────────────────────────────────────
 class BonusEntryModal(discord.ui.Modal, title="Add Bonus Entry"):
     def __init__(self, builder_view: "GiveawayBuilderView"):
         super().__init__()
@@ -999,6 +1015,7 @@ class Giveaway(commands.Cog):
             await self.update_giveaway_embed(giveaway_id, cancelled=True)
             return
 
+        # Weighted selection
         weights = []
         for user_id in entrants:
             weight = 1
@@ -1022,8 +1039,15 @@ class Giveaway(commands.Cog):
 
         await self.update_giveaway_embed(giveaway_id, winner_id=winner_id, early=early)
 
+        # ─── Announce end in the original channel ──────────────────────────
+        channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
+        if channel:
+            await channel.send(f"🎉 **The giveaway has ended!**\n"
+                               f"**Winner:** {winner_mention}\n"
+                               f"**Prize:** {data['prize']}\n"
+                               f"Please check your DMs for a ticket to claim your prize.")
+
         # ─── Create ticket ──────────────────────────────────────────────────
-        print(f"📢 Creating ticket for giveaway {giveaway_id}, winner {winner_id}")
         await create_giveaway_ticket(self.bot, self.bot.get_guild(GUILD_ID), data, winner_id)
 
         # ─── DM winner ──────────────────────────────────────────────────────
@@ -1044,9 +1068,8 @@ class Giveaway(commands.Cog):
 
         # ─── Ping ping role ─────────────────────────────────────────────────
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
-        channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel and ping_role:
-            await channel.send(f"{ping_role.mention} 🎉 **{data['name']}** has ended! Winner: {winner_mention}")
+            await channel.send(f"{ping_role.mention} 🎉 **{data['name']}** has ended!")
 
         # ─── Log ────────────────────────────────────────────────────────────
         embed = discord.Embed(
