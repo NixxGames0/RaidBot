@@ -45,7 +45,7 @@ ROLE_ICON_MAP = {
     "blacklisted": 1535669616721002626,
     "linked": 1535663327085076572,
     "verified": 1535554357762850817,
-    "ghoster": 1536325001584578621,
+    "ghoster": 1536325001584578621,   # new icon
 }
 
 # ─── Icon cache ───────────────────────────────────────────
@@ -222,7 +222,7 @@ async def safe_respond(interaction, *args, **kwargs):
 # ─── Role Builder Views ────────────────────────────────────
 class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
-        super().__init__(timeout=300)  # 5 minutes
+        super().__init__(timeout=300)
         self.user_id = user_id
         self.mode = mode
         self.data = {
@@ -299,15 +299,12 @@ class RoleBuilderView(discord.ui.View):
 
         try:
             if self.mode == "create":
-                # Create the role
                 role = await guild.create_role(
                     name=self.data["name"],
                     color=self.data["color"],
                     reason=f"Custom role created by {interaction.user}"
                 )
 
-                # ─── Place the role at the VERY TOP ──────────────────────────
-                # Try to position it just below the bot's specific role
                 bot_role = guild.get_role(BOT_ROLE_ID)
                 if bot_role:
                     target_position = bot_role.position - 1
@@ -318,7 +315,6 @@ class RoleBuilderView(discord.ui.View):
                         logger.info(f"✅ Custom role {role.name} placed at position {target_position}")
                     except Exception as e:
                         logger.warning(f"Failed to set role position: {e}")
-                        # Fallback: use bot's highest role
                         bot_top = max(guild.me.roles, key=lambda r: r.position)
                         target_position = bot_top.position - 1
                         try:
@@ -327,7 +323,6 @@ class RoleBuilderView(discord.ui.View):
                         except Exception as e2:
                             logger.warning(f"Fallback also failed: {e2}")
                 else:
-                    # No bot role found; use the bot's highest role
                     bot_top = max(guild.me.roles, key=lambda r: r.position)
                     target_position = bot_top.position - 1
                     try:
@@ -335,7 +330,6 @@ class RoleBuilderView(discord.ui.View):
                         logger.info(f"✅ Custom role placed at position {target_position}")
                     except Exception as e:
                         logger.warning(f"Failed to set role position: {e}")
-                        # Last resort: try position 1
                         try:
                             await role.edit(position=1)
                             logger.info("✅ Custom role placed at position 1 as last resort")
@@ -355,7 +349,6 @@ class RoleBuilderView(discord.ui.View):
                 embed.add_field(name="Color", value=f"#{self.data['color'].value:06x}", inline=True)
                 await send_log(interaction.client, embed)
 
-                # Disable buttons and update the original message
                 for child in self.children:
                     child.disabled = True
                 await interaction.edit_original_response(embed=embed, view=self)
@@ -622,10 +615,20 @@ class CustomRoles(commands.Cog):
     )
     @app_commands.checks.cooldown(1, 60)
     async def syncemojis(self, interaction: discord.Interaction):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
+        # Safe defer – same pattern as giveaway commands
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong, please try again.", ephemeral=True)
+                return
+        except discord.NotFound:
+            # Interaction expired – user can retry
+            return
 
-        await interaction.response.defer(ephemeral=True)
+        if not is_staff(interaction.user):
+            return await interaction.followup.send("❌ You do not have permission.", ephemeral=True)
+
         guild = interaction.guild
         results = await sync_all_role_emojis(guild)
 
