@@ -1141,19 +1141,6 @@ class GameVerifyUsernameModal(discord.ui.Modal, title="Verify via RHVerif Game")
                     ephemeral=True
                 )
 
-        # Check if flagged (same anti-alt logic)
-        is_flagged, flags = await check_account_flagged(roblox_id)
-        if is_flagged:
-            await send_manual_verification(
-                interaction.client,
-                interaction,
-                interaction.user,
-                roblox_name,
-                roblox_id,
-                flags
-            )
-            return
-
         # Store as a pending game verification
         pending_game_verifications[str(interaction.user.id)] = {
             "roblox_name": roblox_name,
@@ -1295,6 +1282,39 @@ async def complete_game_verification(bot: commands.Bot, roblox_id: int, roblox_n
     if not member:
         print(f"❌ Member {discord_user_id} not found in guild.")
         return False
+
+    # Check if flagged AFTER join is confirmed
+    is_flagged, flags = await check_account_flagged(roblox_id)
+    if is_flagged:
+        # Update the waiting embed to say under review
+        try:
+            msg = pending.get("message")
+            if msg:
+                review_embed = discord.Embed(
+                    title="⏳ Verification Under Review",
+                    description=(
+                        f"**{roblox_name}** — your account has been flagged for manual review.\n\n"
+                        "A staff member will verify you shortly. Please be patient!"
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                review_embed.set_footer(text="Manual review required")
+                await msg.edit(embed=review_embed, view=discord.ui.View())
+        except Exception as e:
+            print(f"⚠️ Could not edit game verify message for flagged user: {e}")
+
+        # Create a fake interaction-less send for send_manual_verification
+        class _FakeInteraction:
+            def __init__(self, member, client):
+                self.user = member
+                self.client = client
+                self.guild = member.guild
+            async def followup_send(self, *a, **kw): pass
+
+        fake_interaction = _FakeInteraction(member, bot)
+        await send_manual_verification(bot, fake_interaction, member, roblox_name, roblox_id, flags)
+        return True
 
     # Edit the waiting embed to show success
     try:
