@@ -28,7 +28,6 @@ TICKET_CATEGORY_ID = 1535905899854430222
 
 # ─── Database setup ─────────────────────────────────────────
 async def init_giveaway_db():
-    # Create main giveaways table
     await d1_query(
         """CREATE TABLE IF NOT EXISTS giveaways (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +49,6 @@ async def init_giveaway_db():
             last_reroll TEXT
         )"""
     )
-    # Create giveaway tickets table
     await d1_query(
         """CREATE TABLE IF NOT EXISTS giveaway_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +60,6 @@ async def init_giveaway_db():
             closed_at TEXT
         )"""
     )
-    # Try adding missing columns (safe to run)
     for col_sql in [
         "ALTER TABLE giveaways ADD COLUMN required_role_id TEXT",
         "ALTER TABLE giveaways ADD COLUMN last_reroll TEXT",
@@ -135,13 +132,11 @@ class GiveawayTicketControlView(discord.ui.View):
 
     @discord.ui.button(label="✅ Delivered", style=discord.ButtonStyle.success, custom_id="giveaway_ticket_deliver")
     async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Permissions: host, Head Staff, or Founder
         allowed = (interaction.user.id == self.host_id or
                    any(role.id in (HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID) for role in interaction.user.roles))
         if not allowed:
             return await interaction.response.send_message("❌ Only the host or Head Staff can mark as delivered.", ephemeral=True)
 
-        # Confirm
         await interaction.response.send_message(
             "⚠️ Are you sure the prize has been delivered? This will delete the ticket channel.",
             view=ConfirmDeliverView(self.channel_id, self.giveaway_id),
@@ -167,7 +162,6 @@ class ConfirmDeliverView(discord.ui.View):
                 await interaction.followup.send(f"❌ Failed to delete channel: {e}", ephemeral=True)
                 return
 
-        # Update DB status
         now = datetime.now(timezone.utc).isoformat()
         await d1_query(
             "UPDATE giveaway_tickets SET status = 'closed', closed_at = ? WHERE channel_id = ?",
@@ -176,7 +170,6 @@ class ConfirmDeliverView(discord.ui.View):
 
         await interaction.followup.send("✅ Prize marked as delivered. Ticket channel deleted.", ephemeral=True)
 
-        # Log
         embed = discord.Embed(
             title="📦 Giveaway Prize Delivered",
             color=discord.Color.green(),
@@ -200,9 +193,10 @@ class ConfirmDeliverView(discord.ui.View):
 async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaway_data: dict, winner_id: int):
     """Create a ticket channel for the giveaway winner."""
     category = guild.get_channel(TICKET_CATEGORY_ID)
-    if not category:
-        print("⚠️ Ticket category not found; cannot create ticket.")
-        return
+    if category:
+        print(f"✅ Found ticket category {category.name} ({category.id})")
+    else:
+        print(f"⚠️ Ticket category {TICKET_CATEGORY_ID} not found. Will create channel without category.")
 
     host = guild.get_member(int(giveaway_data["host_id"]))
     winner = guild.get_member(winner_id)
@@ -229,22 +223,35 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
         overwrites[host_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
     try:
-        channel = await guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            overwrites=overwrites,
-            reason=f"Giveaway ticket for {giveaway_data['giveaway_id']}"
-        )
+        if category:
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Giveaway ticket for {giveaway_data['giveaway_id']}"
+            )
+        else:
+            # Fallback: create without category
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                overwrites=overwrites,
+                reason=f"Giveaway ticket for {giveaway_data['giveaway_id']} (no category)"
+            )
+        print(f"✅ Created ticket channel {channel.name} ({channel.id})")
     except Exception as e:
-        print(f"Failed to create ticket channel: {e}")
+        print(f"❌ Failed to create ticket channel: {e}")
         return
 
     # Store ticket in DB
     now = datetime.now(timezone.utc).isoformat()
-    await d1_query(
-        "INSERT INTO giveaway_tickets (channel_id, giveaway_id, winner_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        [str(channel.id), giveaway_data["giveaway_id"], str(winner_id), "open", now]
-    )
+    try:
+        await d1_query(
+            "INSERT INTO giveaway_tickets (channel_id, giveaway_id, winner_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            [str(channel.id), giveaway_data["giveaway_id"], str(winner_id), "open", now]
+        )
+    except Exception as e:
+        print(f"❌ Failed to insert ticket into DB: {e}")
+        return
 
     # Send the panel embed with the view
     embed = discord.Embed(
@@ -284,24 +291,8 @@ async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaw
 async def restore_giveaway_tickets(bot: commands.Bot):
     """Re-attach views to open giveaway tickets after bot restart."""
     await bot.wait_until_ready()
-    
-    # First, ensure the table exists (it should, but just in case)
-    try:
-        await d1_query(
-            """CREATE TABLE IF NOT EXISTS giveaway_tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id TEXT NOT NULL,
-                giveaway_id TEXT NOT NULL,
-                winner_id TEXT NOT NULL,
-                status TEXT DEFAULT 'open',
-                created_at TEXT NOT NULL,
-                closed_at TEXT
-            )"""
-        )
-    except Exception as e:
-        print(f"Error creating giveaway_tickets table: {e}")
-        return
-    
+    await asyncio.sleep(2)  # ensure DB ready
+
     try:
         rows = await d1_query(
             "SELECT channel_id, giveaway_id, winner_id FROM giveaway_tickets WHERE status = 'open'"
@@ -309,13 +300,12 @@ async def restore_giveaway_tickets(bot: commands.Bot):
     except Exception as e:
         print(f"Error querying giveaway_tickets: {e}")
         return
-    
+
     restored = 0
     for row in rows["results"]:
         channel_id = int(row["channel_id"])
         giveaway_id = row["giveaway_id"]
         winner_id = int(row["winner_id"])
-        # Get host_id from giveaway
         g_row = await d1_query(
             "SELECT host_id FROM giveaways WHERE giveaway_id = ?",
             [giveaway_id]
@@ -326,7 +316,6 @@ async def restore_giveaway_tickets(bot: commands.Bot):
         channel = bot.get_channel(channel_id)
         if not channel:
             continue
-        # Search for the ticket message (the one with the embed)
         try:
             async for message in channel.history(limit=50):
                 if message.author == bot.user and message.embeds:
@@ -345,7 +334,7 @@ async def restore_giveaway_tickets(bot: commands.Bot):
     print(f"✅ Restored {restored} giveaway ticket views.")
 
 
-# ─── Bonus Entry Views ────────────────────────────────────
+# ─── Bonus Entry Views (unchanged) ──────────────────────
 class BonusEntryModal(discord.ui.Modal, title="Add Bonus Entry"):
     def __init__(self, builder_view: "GiveawayBuilderView"):
         super().__init__()
@@ -640,15 +629,12 @@ class GiveawayBuilderView(discord.ui.View):
             giveaway_id = generate_giveaway_id()
             self.data["giveaway_id"] = giveaway_id
 
-            # Send ping
             ping_role = interaction.guild.get_role(GIVEAWAY_PING_ROLE_ID)
             if ping_role:
                 await interaction.channel.send(f"{ping_role.mention} 🎉 New giveaway starting!")
 
-            # Post embed
             await self.post_public_embed(interaction, giveaway_id)
 
-            # Save to DB
             now = datetime.now(timezone.utc).isoformat()
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
@@ -668,8 +654,8 @@ class GiveawayBuilderView(discord.ui.View):
                     "active",
                     json.dumps(self.bonus_entries),
                     json.dumps([]),
-                    "0",   # placeholder
-                    "0"    # placeholder
+                    "0",
+                    "0"
                 ]
             )
             await interaction.response.send_message(f"✅ Giveaway posted! ID: {giveaway_id}", ephemeral=True)
@@ -684,7 +670,6 @@ class GiveawayBuilderView(discord.ui.View):
             await log_giveaway(self.bot, embed)
             await send_log(self.bot, embed)
         else:
-            # Edit mode
             await self.update_public_embed(interaction, giveaway_id)
             end_time = (datetime.now(timezone.utc) + timedelta(seconds=self.data["duration"])).isoformat()
             await d1_query(
@@ -971,7 +956,6 @@ class GiveawayPublicView(discord.ui.View):
 class Giveaway(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # These tasks will run after the bot is ready
         self.bot.loop.create_task(self.init_db())
         self.bot.loop.create_task(self.restore_tickets())
         self.check_expired_giveaways.start()
@@ -982,8 +966,6 @@ class Giveaway(commands.Cog):
 
     async def restore_tickets(self):
         await self.bot.wait_until_ready()
-        # Wait a moment for the DB to be fully initialized
-        await asyncio.sleep(2)
         await restore_giveaway_tickets(self.bot)
 
     def cog_unload(self):
@@ -1017,7 +999,6 @@ class Giveaway(commands.Cog):
             await self.update_giveaway_embed(giveaway_id, cancelled=True)
             return
 
-        # Weighted selection
         weights = []
         for user_id in entrants:
             weight = 1
@@ -1034,19 +1015,18 @@ class Giveaway(commands.Cog):
         winner = self.bot.get_guild(GUILD_ID).get_member(winner_id)
         winner_mention = winner.mention if winner else f"<@{winner_id}>"
 
-        # Update DB
         await d1_query(
             "UPDATE giveaways SET status = 'ended', winner_ids = ? WHERE giveaway_id = ?",
             [json.dumps([winner_id]), giveaway_id]
         )
 
-        # Update embed
         await self.update_giveaway_embed(giveaway_id, winner_id=winner_id, early=early)
 
-        # Create ticket for the winner
+        # ─── Create ticket ──────────────────────────────────────────────────
+        print(f"📢 Creating ticket for giveaway {giveaway_id}, winner {winner_id}")
         await create_giveaway_ticket(self.bot, self.bot.get_guild(GUILD_ID), data, winner_id)
 
-        # DM winner
+        # ─── DM winner ──────────────────────────────────────────────────────
         try:
             dm_embed = discord.Embed(
                 title="🎉 You Won the Giveaway!",
@@ -1059,16 +1039,16 @@ class Giveaway(commands.Cog):
             dm_embed.add_field(name="Ticket", value="A ticket has been opened for you to claim your prize.", inline=False)
             if winner:
                 await winner.send(embed=dm_embed)
-        except:
-            pass
+        except Exception as e:
+            print(f"❌ Could not DM winner: {e}")
 
-        # Ping ping role
+        # ─── Ping ping role ─────────────────────────────────────────────────
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
         channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel and ping_role:
             await channel.send(f"{ping_role.mention} 🎉 **{data['name']}** has ended! Winner: {winner_mention}")
 
-        # Log
+        # ─── Log ────────────────────────────────────────────────────────────
         embed = discord.Embed(
             title="🏁 Giveaway Ended" + (" Early" if early else ""),
             color=discord.Color.gold() if not early else discord.Color.orange(),
