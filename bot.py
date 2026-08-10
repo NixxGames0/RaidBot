@@ -33,6 +33,9 @@ FOUNDER_ROLE_ID = 1535553078852325506
 BLACKLIST_ROLE_ID = 1535669616721002626
 BOT_VERIFIED_ROLE = 1535554357762850817  # Same as VERIFIED_ROLE_ID
 
+# ── Added for levels.py integration ─────────────────────────────────────────
+BOOSTER_ROLE_ID = 1535570767855624262  # Server Booster role
+
 # ── Staff Role Sets ──────────────────────────────────────────────────────────
 STAFF_ROLES = {
     TRIAL_MOD_ROLE_ID,
@@ -248,6 +251,7 @@ async def init_database():
                 used_at TEXT
             )"""
         )
+        # ── FIXED: separate calls for these two tables ──
         await d1_query(
             """CREATE TABLE IF NOT EXISTS flagged_raids (
                 raid_id TEXT PRIMARY KEY,
@@ -258,7 +262,9 @@ async def init_database():
                 final_wave INTEGER NOT NULL,
                 duration TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            )""",
+            )"""
+        )
+        await d1_query(
             """CREATE TABLE IF NOT EXISTS invite_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invite_code TEXT NOT NULL UNIQUE,
@@ -268,7 +274,7 @@ async def init_database():
                 uses INTEGER DEFAULT 0
             )"""
         )
-        
+
         # Try adding missing columns (safe to run)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN weekly_points INTEGER DEFAULT 0",
@@ -348,7 +354,7 @@ class MyBot(commands.Bot):
                 name="Raids | /help"
             )
         )
-        
+
         # ── Start the aiohttp web server after bot is ready ──
         if self.web_server is None:
             self.loop.create_task(self.start_web_server())
@@ -357,46 +363,46 @@ class MyBot(commands.Bot):
         """Starts the Roblox verification webhook server"""
         from aiohttp import web
         import json
-        
+
         async def handle_roblox_callback(request):
             """Receives POST from Roblox game"""
             try:
                 data = await request.json()
                 roblox_id = data.get('roblox_id')
                 roblox_name = data.get('roblox_name')
-                
+
                 if not roblox_id or not roblox_name:
                     return web.Response(status=400, text="Invalid payload")
-                
+
                 print(f"🟢 Received verification from Roblox game: {roblox_name} (ID: {roblox_id})")
-                
+
                 # Process verification securely in the background
                 async def process_verify():
                     try:
                         from cogs.verify import pending_verifications, finalize_verification
-                        
+
                         discord_user_id = None
                         # Find the Discord user waiting for this Roblox ID
                         for uid, data in pending_verifications.items():
                             if data.get('roblox_id') == roblox_id:
                                 discord_user_id = uid
                                 break
-                        
+
                         if not discord_user_id:
                             print(f"⚠️ Roblox user {roblox_name} attempted verify, but no pending Discord request found.")
                             return
-                        
+
                         # Remove from pending
                         del pending_verifications[discord_user_id]
-                        
+
                         # Get the Discord Member
                         guild = self.get_guild(self.guild_id)
                         member = guild.get_member(int(discord_user_id))
-                        
+
                         if not member:
                             print(f"❌ Could not find Discord member {discord_user_id} in the guild.")
                             return
-                        
+
                         # FINALIZE THE VERIFICATION!
                         await finalize_verification(
                             self,
@@ -407,29 +413,29 @@ class MyBot(commands.Bot):
                             manual=False
                         )
                         print(f"✅ Successfully auto-verified {roblox_name} -> {member.display_name}!")
-                        
+
                     except Exception as e:
                         print(f"❌ Error processing Roblox verification: {e}")
-                
+
                 # Fire and forget
                 self.loop.create_task(process_verify())
-                
+
                 return web.Response(text="OK")
-                
+
             except Exception as e:
                 print(f"❌ Webhook error: {e}")
                 return web.Response(status=500, text="Internal error")
 
         app = web.Application()
         app.router.add_post('/auth/roblox_callback', handle_roblox_callback)
-        
+
         runner = web.AppRunner(app)
         await runner.setup()
-        
+
         # We run on PORT 8080 to avoid conflicting with Railway's default
         site = web.TCPSite(runner, '0.0.0.0', 8080)
         await site.start()
-        
+
         print("✅ Roblox verification webhook running on port 8080")
         self.web_server = site
 
