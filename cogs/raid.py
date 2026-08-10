@@ -686,7 +686,7 @@ class StartRaidModal(discord.ui.Modal, title="Start Raid"):
         )
         embed.add_field(name="Status", value="⏳ PENDING...", inline=True)
         embed.add_field(name="Hosters", value=f"✅ {interaction.user.mention} (Host)", inline=False)
-        embed.set_footer(text="Confirm to start the raid, invite co-hosters, or cancel.")
+        embed.set_footer(text="Live status updates automatically.")
         view = RaidSetupView(host_id=interaction.user.id, code=code, host_mention=interaction.user.mention)
         msg = await host_channel.send(embed=embed, view=view)
         await track_setup_message(guild_id, msg.id)
@@ -881,6 +881,7 @@ class InviteHosterModal(discord.ui.Modal, title="Invite Hoster"):
             )
         if sv:
             sv.pending_invites[uid] = True
+
         try:
             host_id = sv.host_id if sv else interaction.user.id
             dm_embed = discord.Embed(
@@ -899,6 +900,9 @@ class InviteHosterModal(discord.ui.Modal, title="Invite Hoster"):
                 f"✅ Invite sent to {member.mention}.",
                 ephemeral=True
             )
+            # Update the setup embed to show pending invite
+            if sv:
+                await sv.update_setup_embed(interaction)
         except discord.Forbidden:
             await interaction.followup.send(
                 f"❌ Could not DM {member.mention}. They may have DMs closed.",
@@ -917,7 +921,7 @@ async def end_raid(interaction: discord.Interaction, final_wave: int):
     now = datetime.now(timezone.utc)
     duration = (now - raid["start_time"]).total_seconds()
     mins_per_wave = duration / 60 / max(final_wave, 1)
-    flagged = mins_per_wave < 1.0   # changed from 1.5 to 1.0
+    flagged = mins_per_wave < 1.0
     points_each = final_wave
     xp_total = get_total_xp_for_raid_sync(final_wave)
     xp_each = xp_total
@@ -1096,7 +1100,9 @@ class RaidSetupView(discord.ui.View):
             else:
                 hoster_lines.append(f"⏳ <@{hid}> (Pending)")
         embed.add_field(name="Hosters", value="\n".join(hoster_lines) if hoster_lines else "None", inline=False)
-        embed.set_footer(text="Confirm to start the raid, invite co-hosters, or cancel.")
+        pending_count = len(self.pending_invites)
+        embed.add_field(name="📨 Pending Invites", value=str(pending_count), inline=True)
+        embed.set_footer(text="Live status updates automatically.")
         await interaction.message.edit(embed=embed)
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
@@ -1221,7 +1227,6 @@ class RaidSetupView(discord.ui.View):
             raid["control_msg_id"] = ctrl_msg.id
 
         # ─── Send the PS code as an ephemeral message in the control channel ──
-        # This replaces the old DM to host
         await interaction.followup.send(
             f"🔑 {interaction.user.mention} Your raid code: `{self.code}`\n"
             "Keep this private! Share it only with your co-hosters.",
@@ -1230,9 +1235,6 @@ class RaidSetupView(discord.ui.View):
 
         schedule_raid_timeout(guild_id, interaction.client)
 
-        # ─── We no longer DM the host the code ─────────────────────────────────
-        # (removed the DM block)
-
         log_embed = discord.Embed(
             title="⚔️ Raid Started",
             color=discord.Color.green(),
@@ -1240,7 +1242,6 @@ class RaidSetupView(discord.ui.View):
         )
         log_embed.add_field(name="Raid ID", value=f"`{raid_id}`", inline=True)
         log_embed.add_field(name="Host", value=f"<@{self.host_id}>", inline=True)
-        log_embed.add_field(name="Code", value=f"`{self.code}`", inline=True)
         log_embed.add_field(name="Auto-Timeout", value=f"{RAID_TIMEOUT_MINUTES} minutes", inline=True)
         await send_raid_log(interaction.client, log_embed)
         await interaction.followup.send(
@@ -1323,7 +1324,11 @@ class JoinRaidView(discord.ui.View):
                 "🚫 You are blacklisted.",
                 ephemeral=True
             )
-        await interaction.response.send_modal(JoinRaidModal())
+        # Safe modal sending
+        if not interaction.response.is_done():
+            await interaction.response.send_modal(JoinRaidModal())
+        else:
+            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
 
 
 class RaidControlView(discord.ui.View):
@@ -1377,19 +1382,20 @@ class RaidControlView(discord.ui.View):
 
 class HosterInviteView(discord.ui.View):
     def __init__(self, host_id, invitee_id, guild_id, setup_view=None):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)   # persistent now
         self.host_id = host_id
         self.invitee_id = invitee_id
         self.guild_id = guild_id
         self.setup_view = setup_view
 
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="hoster_invite_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.invitee_id:
             return await interaction.response.send_message(
                 "❌ This invite is not for you.",
                 ephemeral=True
             )
+        # Check if raid still exists
         raid = raids.get(self.guild_id)
         if raid and raid.get("confirmed"):
             return await interaction.response.send_message(
@@ -1414,36 +1420,60 @@ class HosterInviteView(discord.ui.View):
                 )
             raid["hosters"].append(self.invitee_id)
             raid["pending_invites"].pop(self.invitee_id, None)
-        self.stop()
-        await interaction.response.send_message(
-            "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
-            ephemeral=True
-        )
-        # DM the co-hoster the code if the raid is already active
+
+        # Send the PS code immediately – try DM first, fallback to channel followup
+        code_sent = False
         try:
             raid = raids.get(self.guild_id)
-            invitee = interaction.client.get_user(self.invitee_id)
-            if invitee and raid and raid.get("code"):
-                code_embed = discord.Embed(
-                    title="⚔️ Raid Code",
-                    description=f"### `{raid['code']}`",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now(timezone.utc)
-                )
-                code_embed.add_field(name="​", value="You've been accepted as a co-hoster! Keep this code private.", inline=False)
-                await invitee.send(embed=code_embed)
+            if raid and raid.get("code"):
+                invitee = interaction.client.get_user(self.invitee_id)
+                if invitee:
+                    code_embed = discord.Embed(
+                        title="⚔️ Raid Code",
+                        description=f"### `{raid['code']}`",
+                        color=discord.Color.green(),
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    code_embed.add_field(name="​", value="You've been accepted as a co-hoster! Keep this code private.", inline=False)
+                    await invitee.send(embed=code_embed)
+                    code_sent = True
+                    print(f"✅ DM sent code to {invitee} (ID: {self.invitee_id})")
         except Exception as e:
-            print(f"Could not DM co-hoster code: {e}")
+            print(f"❌ Could not DM co-hoster code: {e}")
+
+        # Respond to the interaction
+        if code_sent:
+            await interaction.response.send_message(
+                "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
+                ephemeral=True
+            )
+        else:
+            # Fallback: send the code in the interaction response (ephemeral)
+            raid = raids.get(self.guild_id)
+            if raid and raid.get("code"):
+                await interaction.response.send_message(
+                    f"✅ You have joined the raid as a co-hoster!\n🔑 Your raid code: `{raid['code']}`\nKeep this private!",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "✅ You have joined the raid as a co-hoster! (Code not available yet – contact the host.)",
+                    ephemeral=True
+                )
+
+        # Notify the host
         try:
             host = interaction.client.get_user(self.host_id)
             if host:
                 await host.send(
                     f"✅ **Raid Hub** — <@{self.invitee_id}> has accepted your hoster invite!"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Could not notify host: {e}")
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="✖️")
+        self.stop()
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="hoster_invite_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.invitee_id:
             return await interaction.response.send_message(
@@ -1498,7 +1528,11 @@ class StartRaidPanelView(discord.ui.View):
                 "❌ A raid is already active.",
                 ephemeral=True
             )
-        await interaction.response.send_modal(StartRaidModal())
+        # Safe modal sending
+        if not interaction.response.is_done():
+            await interaction.response.send_modal(StartRaidModal())
+        else:
+            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
 
 
 # ── Raid Cog ──────────────────────────────────────────────────────────────────
@@ -1509,6 +1543,7 @@ class Raid(commands.Cog):
         bot.add_view(JoinRaidView())
         bot.add_view(RaidControlView())
         bot.add_view(FlaggedApprovalView())
+        bot.add_view(HosterInviteView(0, 0, 0))  # dummy for persistence
         print("✅ Raid cog initialized")
 
     @app_commands.command(
