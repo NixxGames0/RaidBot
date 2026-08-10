@@ -291,6 +291,29 @@ async def init_database():
             )"""
         )
 
+        # ─── Giveaways table ──────────────────────────────────────────────────
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS giveaways (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                giveaway_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                sponsor TEXT,
+                prize TEXT NOT NULL,
+                host_id TEXT NOT NULL,
+                required_role_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                ended INTEGER DEFAULT 0,
+                winner_ids TEXT,
+                channel_id TEXT NOT NULL,
+                message_id TEXT,
+                bonus_entries TEXT,
+                entrants TEXT DEFAULT '[]',
+                status TEXT DEFAULT 'active',
+                last_reroll TEXT
+            )"""
+        )
+
         # Try adding missing columns (safe to run)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN weekly_points INTEGER DEFAULT 0",
@@ -327,7 +350,8 @@ COGS = [
     "cogs.ticket",
     "cogs.shop",
     "cogs.logger",
-    "cogs.custom_roles",  # New custom role cog
+    "cogs.custom_roles",
+    "cogs.giveaway",  # new giveaway cog
 ]
 
 
