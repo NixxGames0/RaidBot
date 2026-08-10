@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
+import logging
 
 from bot import (
     d1_query,
@@ -16,6 +17,8 @@ from bot import (
 
 CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
 ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
+
+logger = logging.getLogger(__name__)
 
 
 # ── Database helpers ──────────────────────────────────────
@@ -97,9 +100,25 @@ class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
                 ephemeral=True
             )
 
+        # ─── Position the role at the very top ─────────────────────────────
         bot_top = max(guild.me.roles, key=lambda r: r.position)
-        await role.edit(position=bot_top.position - 1)
+        target_position = bot_top.position - 1
+        logger.info(f"Bot's top role: {bot_top.name} (position {bot_top.position})")
+        logger.info(f"Target position for custom role: {target_position}")
 
+        try:
+            await role.edit(position=target_position)
+            logger.info(f"✅ Role {role.name} moved to position {target_position}")
+        except Exception as e:
+            logger.error(f"❌ Failed to set role position: {e}")
+            # Fallback: try to move it to position 1 (above @everyone)
+            try:
+                await role.edit(position=1)
+                logger.info("✅ Role moved to position 1 as fallback")
+            except Exception as e2:
+                logger.error(f"❌ Fallback also failed: {e2}")
+
+        # Add role to user
         await interaction.user.add_roles(role)
         await create_custom_role_entry(interaction.user.id, role.id)
 
@@ -345,14 +364,14 @@ def build_custom_role_panel():
     embed.add_field(
         name="Instructions",
         value=(
-            "🆕 **Create** – set a name (max 16 chars) and a hex color.\n"
-            "✏️ **Edit** – change the name or color.\n"
+            "🆕 **Create** – set a name (max 16 chars) and a hex colour.\n"
+            "✏️ **Edit** – change the name or colour.\n"
             "👁️ **Preview** – see how your role looks.\n"
             "🗑️ **Delete** – remove your role."
         ),
         inline=False
     )
-    embed.set_footer(text="Role colors are cosmetic – they do not grant any permissions.")
+    embed.set_footer(text="Role colours are cosmetic – they do not grant any permissions.")
     view = CustomRolePanelView()
     return embed, view
 
