@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio  # ✅ added
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -210,12 +211,16 @@ async def sync_all_role_emojis(guild: discord.Guild):
             if basename not in AVAILABLE_ICONS:
                 results.append(f"❌ `{basename}` – white icon missing")
                 continue
+
+            # Only delay if we actually upload (existing check inside ensures we don't re-upload)
             emoji = await ensure_role_emoji(guild, basename, role.color, role_id)
             results.append(f"✅ `{basename}` → {emoji} (colour #{role.color.value:06x})")
+
+            # Small delay after each upload to avoid rate limits
+            await asyncio.sleep(0.5)
+
         except Exception as e:
             results.append(f"❌ `{basename}` – {e}")
-        # Small delay to avoid rate limits
-        await asyncio.sleep(0.5)
     return results
 
 
@@ -606,10 +611,7 @@ class CustomRoles(commands.Cog):
 
     async def startup_tasks(self):
         await self.bot.wait_until_ready()
-        # Only ensure the database table exists – do NOT auto‑sync emojis
         await ensure_db()
-        # Optionally, we could check if any emojis are missing and only upload the missing ones,
-        # but to avoid rate limits, we skip auto‑sync entirely.
         print("✅ Custom Roles database ready (no auto‑sync to avoid rate limits).")
 
     @app_commands.command(
