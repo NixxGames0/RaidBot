@@ -268,7 +268,7 @@ class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
     )
     icon = discord.ui.TextInput(
         label="Icon (optional)",
-        placeholder=f"Available: {', '.join(AVAILABLE_ICONS.keys()) or 'none'}",
+        placeholder="Enter icon name from folder",  # SHORTENED
         required=False,
         max_length=30,
         default=""
@@ -310,15 +310,21 @@ class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
         except Exception as e:
             return await interaction.followup.send(f"❌ Failed to create role: {e}", ephemeral=True)
 
-        # Position at the top
+        # ─── Position the role at the very top ─────────────────────────────
         bot_top = max(guild.me.roles, key=lambda r: r.position)
+        # Target position: just below bot's highest role, but not below 1
+        target_position = max(1, bot_top.position - 1)
         try:
-            await role.edit(position=bot_top.position - 1)
-        except:
+            await role.edit(position=target_position)
+            logger.info(f"✅ Custom role {role.name} moved to position {target_position}")
+        except Exception as e:
+            logger.warning(f"Failed to set role position to {target_position}: {e}")
+            # Fallback: try position 1
             try:
                 await role.edit(position=1)
-            except:
-                pass
+                logger.info("✅ Custom role moved to position 1 as fallback")
+            except Exception as e2:
+                logger.warning(f"Fallback also failed: {e2}")
 
         # Handle icon: generate gradient emoji
         emoji = None
@@ -330,12 +336,11 @@ class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
                     ephemeral=True
                 )
             try:
-                # Generate gradient emoji based on the role's colour
                 emoji = await ensure_role_emoji(guild, icon_name, role.color)
             except Exception as e:
                 return await interaction.followup.send(f"❌ Failed to upload icon: {e}", ephemeral=True)
 
-        # Assign the emoji as the role's icon (optional, but harmless even if not unlocked)
+        # Assign the emoji as the role's icon (optional)
         if emoji:
             try:
                 await role.edit(icon=emoji)
@@ -383,7 +388,7 @@ class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
         )
         self.icon = discord.ui.TextInput(
             label="Icon (optional)",
-            placeholder=f"Available: {', '.join(AVAILABLE_ICONS.keys()) or 'none'}",
+            placeholder="Enter icon name from folder",  # SHORTENED
             required=False,
             max_length=30,
             default=""
@@ -413,7 +418,7 @@ class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
         except ValueError:
             color = discord.Color.blurple()
 
-        # Handle icon: generate new gradient emoji if changed
+        # Handle icon
         new_emoji = None
         icon_name = self.icon.value.strip().lower()
         if icon_name:
@@ -455,7 +460,7 @@ class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
         )
 
 
-# ── Views ──────────────────────────────────────────────────
+# ─── Views ──────────────────────────────────────────────────
 class ConfirmDeleteView(discord.ui.View):
     def __init__(self, role_id: int, user_id: int, emoji_id: int = None):
         super().__init__(timeout=60)
