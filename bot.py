@@ -32,8 +32,6 @@ HEAD_STAFF_ROLE_ID = 1535558010431340604
 FOUNDER_ROLE_ID = 1535553078852325506
 BLACKLIST_ROLE_ID = 1535669616721002626
 BOT_VERIFIED_ROLE = 1535554357762850817  # Same as VERIFIED_ROLE_ID
-
-# ── Added for levels.py integration ─────────────────────────────────────────
 BOOSTER_ROLE_ID = 1535570767855624262  # Server Booster role
 
 # ── Staff Role Sets ──────────────────────────────────────────────────────────
@@ -152,6 +150,17 @@ def get_hoster_bonus(member: discord.Member) -> float:
     return 1.0
 
 
+# ── Global Logging Helper ────────────────────────────────────────────────────
+async def send_log(bot: commands.Bot, embed: discord.Embed):
+    """Send a log message to the log channel"""
+    channel = bot.get_channel(LOG_CHANNEL_ID)
+    if channel:
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"Error sending log: {e}")
+
+
 # ── Database Initialization ──────────────────────────────────────────────────
 async def init_database():
     try:
@@ -251,7 +260,6 @@ async def init_database():
                 used_at TEXT
             )"""
         )
-        # ── FIXED: separate calls for these two tables ──
         await d1_query(
             """CREATE TABLE IF NOT EXISTS flagged_raids (
                 raid_id TEXT PRIMARY KEY,
@@ -272,6 +280,14 @@ async def init_database():
                 channel_id TEXT,
                 created_at TEXT NOT NULL,
                 uses INTEGER DEFAULT 0
+            )"""
+        )
+        # Custom roles table
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS custom_roles (
+                user_id TEXT PRIMARY KEY,
+                role_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )"""
         )
 
@@ -311,7 +327,7 @@ COGS = [
     "cogs.ticket",
     "cogs.shop",
     "cogs.logger",
-    "cogs.custom_roles",
+    "cogs.custom_roles",  # New custom role cog
 ]
 
 
