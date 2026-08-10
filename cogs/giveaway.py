@@ -1046,14 +1046,12 @@ class Giveaway(commands.Cog):
                     if member and role in member.roles:
                         weight += count
             weights.append(weight)
-        # Pick up to winners_count unique winners
         winners = []
         temp_available = available.copy()
         temp_weights = weights.copy()
         for _ in range(min(winners_count, len(temp_available))):
             idx = random.choices(range(len(temp_available)), weights=temp_weights, k=1)[0]
             winners.append(int(temp_available[idx]))
-            # Remove selected from available
             temp_available.pop(idx)
             temp_weights.pop(idx)
         return winners
@@ -1078,7 +1076,6 @@ class Giveaway(commands.Cog):
             await self.update_giveaway_embed(giveaway_id, cancelled=True)
             return
 
-        # Pick winners
         winners = await self.pick_winners(entrants, bonus_entries, winners_count)
         if not winners:
             await d1_query("UPDATE giveaways SET status = 'cancelled' WHERE giveaway_id = ?", [giveaway_id])
@@ -1092,7 +1089,6 @@ class Giveaway(commands.Cog):
 
         await self.update_giveaway_embed(giveaway_id, winners=winners, early=early)
 
-        # Announce in channel
         channel = self.bot.get_guild(GUILD_ID).get_channel(int(data["channel_id"])) if data["channel_id"] else None
         if channel:
             winner_mentions = ", ".join([f"<@{w}>" for w in winners])
@@ -1108,11 +1104,9 @@ class Giveaway(commands.Cog):
             )
             await channel.send(embed=embed)
 
-        # Create tickets for each winner
         for winner_id in winners:
             await create_giveaway_ticket(self.bot, self.bot.get_guild(GUILD_ID), data, winner_id)
 
-        # DM winners
         for winner_id in winners:
             winner = self.bot.get_guild(GUILD_ID).get_member(winner_id)
             if winner:
@@ -1130,12 +1124,10 @@ class Giveaway(commands.Cog):
                 except Exception as e:
                     print(f"Could not DM winner {winner_id}: {e}")
 
-        # Ping ping role
         ping_role = self.bot.get_guild(GUILD_ID).get_role(GIVEAWAY_PING_ROLE_ID)
         if channel and ping_role:
             await channel.send(f"{ping_role.mention} 🎉 The giveaway has ended!")
 
-        # Log
         log_embed = discord.Embed(
             title="🏁 Giveaway Ended" + (" Early" if early else ""),
             color=discord.Color.gold() if not early else discord.Color.orange(),
@@ -1194,7 +1186,6 @@ class Giveaway(commands.Cog):
             )
             embed.add_field(name="Total Entrants", value=len(entrants), inline=True)
         else:
-            # Still active
             embed = discord.Embed(
                 title=f"🎉 {data['name']}",
                 description=f"**Prize:** {data['prize']}\n"
@@ -1219,7 +1210,17 @@ class Giveaway(commands.Cog):
     @app_commands.command(name="sgiveaway", description="Start a new giveaway (Requires Giveaway Host role)")
     @app_commands.checks.cooldown(1, 10)
     async def sgiveaway(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Immediate defer to avoid timeout
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong, please try again.", ephemeral=True)
+                return
+        except discord.NotFound:
+            # Interaction expired, can't respond
+            return
+
         if not any(role.id == GIVEAWAY_HOST_ROLE_ID for role in interaction.user.roles) and not is_founder(interaction.user):
             return await interaction.followup.send("❌ You need the Giveaway Host role to create giveaways.", ephemeral=True)
 
@@ -1351,17 +1352,13 @@ class Giveaway(commands.Cog):
         entrants = json.loads(data["entrants"])
         bonus_entries = json.loads(data["bonus_entries"]) if data["bonus_entries"] else {}
 
-        # If user specified, we need to reroll that specific winner
         if user:
             if user.id not in winners:
                 return await interaction.followup.send(f"❌ {user.mention} is not a winner of this giveaway.", ephemeral=True)
-            # Remove that user from winners
             winners.remove(user.id)
-            # Pick a new winner from entrants excluding all current winners
             available = [uid for uid in entrants if uid not in winners and uid != user.id]
             if not available:
                 return await interaction.followup.send("❌ No new entrants available to reroll.", ephemeral=True)
-            # Pick one
             weights = []
             for uid in available:
                 weight = 1
@@ -1379,8 +1376,6 @@ class Giveaway(commands.Cog):
             replaced_user_mention = user.mention
             message = f"🔄 Replaced {replaced_user_mention} with {new_winner_mention} as the new winner."
         else:
-            # Reroll all winners
-            # Pick new set of winners (count = original winners_count)
             winners_count = int(data.get("winners_count") or 1)
             new_winners = await self.pick_winners(entrants, bonus_entries, winners_count, exclude=winners)
             if not new_winners:
@@ -1389,16 +1384,13 @@ class Giveaway(commands.Cog):
             new_winner_mentions = ", ".join([f"<@{w}>" for w in winners])
             message = f"🔄 New winner(s) picked: {new_winner_mentions}"
 
-        # Update DB
         await d1_query(
             "UPDATE giveaways SET winner_ids = ?, last_reroll = ? WHERE giveaway_id = ?",
             [json.dumps(winners), datetime.now(timezone.utc).isoformat(), giveaway_id]
         )
 
-        # Update embed
         await self.update_giveaway_embed(giveaway_id, winners=winners)
 
-        # Send announcement in original channel
         channel = interaction.guild.get_channel(int(row["channel_id"])) if row.get("channel_id") else None
         if channel:
             embed = discord.Embed(
@@ -1411,7 +1403,6 @@ class Giveaway(commands.Cog):
             embed.add_field(name="Prize", value=data["prize"], inline=True)
             await channel.send(embed=embed)
 
-        # DM new winner(s)
         for w in winners:
             if user and w == new_winner:
                 member = interaction.guild.get_member(w)
@@ -1430,7 +1421,6 @@ class Giveaway(commands.Cog):
                     except:
                         pass
 
-        # Log
         log_embed = discord.Embed(
             title="🔄 Giveaway Rerolled",
             color=discord.Color.gold(),
