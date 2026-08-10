@@ -39,6 +39,9 @@ except ImportError:
     async def levels_award_xp(user_id, amount, member=None):
         return None
 
+# ── Import update_top_hoster_roles from hoster.py ──────────────────────────
+from cogs.hoster import update_top_hoster_roles
+
 # ── XP Award Function ──────────────────────────────────────────────────────
 async def award_xp(user_id: int, amount: int, member: discord.Member = None) -> dict:
     """Award XP using the levels.py function which handles level-up messages"""
