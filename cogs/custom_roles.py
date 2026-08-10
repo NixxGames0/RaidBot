@@ -28,7 +28,7 @@ from bot import (
 CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
 ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
 ICONS_FOLDER = Path("icons")
-BOT_ROLE_ID = 1535635733791121443  # The bot's specific role for top positioning
+BOT_ROLE_ID = 1535635733791121443
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,6 @@ load_icons()
 
 # ─── Image generation ─────────────────────────────────────
 def generate_gradient_image(base_path: Path, color: discord.Color) -> bytes:
-    """Fill the white PNG shape with a gradient based on the given colour."""
     if not HAS_PIL:
         raise RuntimeError("Pillow is not installed.")
 
@@ -157,19 +156,31 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
     if basename not in AVAILABLE_ICONS:
         raise ValueError(f"Icon '{basename}' not found.")
 
-    try:
-        image_data = generate_gradient_image(AVAILABLE_ICONS[basename], color)
-    except Exception as e:
-        raise RuntimeError(f"Failed to generate gradient: {e}")
-
     emoji_name = f"role_{basename}"
 
+    # ─── Check if we already have a stored emoji ──────────────────────────
+    stored_id = await get_stored_emoji_id(basename)
+    if stored_id:
+        existing = discord.utils.get(guild.emojis, id=stored_id)
+        if existing and existing.name == emoji_name:
+            # Emoji exists and matches – return it
+            logger.info(f"✅ Using existing emoji '{emoji_name}' (ID: {stored_id})")
+            return existing
+
+    # ─── Delete any emoji with the same name (stale) ──────────────────────
     existing = discord.utils.get(guild.emojis, name=emoji_name)
     if existing:
         try:
             await existing.delete(reason="Refreshing role emoji")
-        except:
-            pass
+            logger.info(f"🗑️ Deleted stale emoji '{emoji_name}'")
+        except Exception as e:
+            logger.warning(f"Could not delete emoji {emoji_name}: {e}")
+
+    # ─── Generate and upload new emoji ────────────────────────────────────
+    try:
+        image_data = generate_gradient_image(AVAILABLE_ICONS[basename], color)
+    except Exception as e:
+        raise RuntimeError(f"Failed to generate gradient: {e}")
 
     try:
         emoji = await guild.create_custom_emoji(
@@ -178,8 +189,8 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
             reason=f"Generated emoji for role colour #{color.value:06x}"
         )
         logger.info(f"✅ Uploaded emoji '{emoji_name}' for colour #{color.value:06x}")
-        if role_id and role_id in ROLE_ICON_MAP.values():
-            await store_emoji_id(basename, emoji.id)
+        # Store the new ID
+        await store_emoji_id(basename, emoji.id)
         return emoji
     except discord.Forbidden:
         logger.error("Bot lacks 'manage_emojis_and_stickers' permission.")
@@ -219,7 +230,7 @@ async def safe_respond(interaction, *args, **kwargs):
         pass
 
 
-# ─── Role Builder Views ────────────────────────────────────
+# ─── Role Builder Views (unchanged) ──────────────────────
 class RoleBuilderView(discord.ui.View):
     def __init__(self, user_id: int, mode: str = "create", existing_data: dict = None):
         super().__init__(timeout=300)
@@ -615,7 +626,6 @@ class CustomRoles(commands.Cog):
     )
     @app_commands.checks.cooldown(1, 60)
     async def syncemojis(self, interaction: discord.Interaction):
-        # Safe defer – same pattern as giveaway commands
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
@@ -623,7 +633,6 @@ class CustomRoles(commands.Cog):
                 await interaction.followup.send("Something went wrong, please try again.", ephemeral=True)
                 return
         except discord.NotFound:
-            # Interaction expired – user can retry
             return
 
         if not is_staff(interaction.user):
