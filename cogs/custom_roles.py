@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import asyncio  # ✅ added
+import asyncio
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -212,11 +212,10 @@ async def sync_all_role_emojis(guild: discord.Guild):
                 results.append(f"❌ `{basename}` – white icon missing")
                 continue
 
-            # Only delay if we actually upload (existing check inside ensures we don't re-upload)
             emoji = await ensure_role_emoji(guild, basename, role.color, role_id)
             results.append(f"✅ `{basename}` → {emoji} (colour #{role.color.value:06x})")
 
-            # Small delay after each upload to avoid rate limits
+            # Small delay to avoid rate limits
             await asyncio.sleep(0.5)
 
         except Exception as e:
