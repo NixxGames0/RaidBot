@@ -47,6 +47,19 @@ async def delete_custom_role_entry(user_id: int):
     )
 
 
+# ── Helper to safely respond to interactions ─────────────
+async def safe_respond(interaction, *args, **kwargs):
+    """Safely respond to an interaction, handling timeouts."""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(*args, **kwargs)
+        else:
+            await interaction.followup.send(*args, **kwargs)
+    except discord.NotFound:
+        # Interaction expired – user will need to try again
+        pass
+
+
 # ── Modals ─────────────────────────────────────────────────
 class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
     name = discord.ui.TextInput(
@@ -141,6 +154,8 @@ class CreateRoleModal(discord.ui.Modal, title="Create Custom Role"):
 class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
     def __init__(self, current_name: str, current_color: discord.Color):
         super().__init__()
+        # Use .value to get the integer colour, then format as hex
+        hex_color = f"#{current_color.value:06x}"
         self.name = discord.ui.TextInput(
             label="Role Name",
             placeholder="Max 50 characters",
@@ -153,7 +168,7 @@ class EditRoleModal(discord.ui.Modal, title="Edit Custom Role"):
             placeholder="#5865F2",
             required=False,
             max_length=7,
-            default=f"#{current_color.to_rgb():06x}"
+            default=hex_color
         )
         self.add_item(self.name)
         self.add_item(self.color)
@@ -260,52 +275,31 @@ class CustomRolePanelView(discord.ui.View):
     @discord.ui.button(label="🆕 Create", style=discord.ButtonStyle.success, custom_id="cr_create")
     async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You are not eligible.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
         await interaction.response.send_modal(CreateRoleModal())
 
     @discord.ui.button(label="✏️ Edit", style=discord.ButtonStyle.primary, custom_id="cr_edit")
     async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You are not eligible.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
         role_id = await get_custom_role(interaction.user.id)
         if not role_id:
-            return await interaction.response.send_message(
-                "❌ You don't have a custom role. Create one first.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You don't have a custom role. Create one first.", ephemeral=True)
         role = interaction.guild.get_role(role_id)
         if not role:
-            return await interaction.response.send_message(
-                "❌ Your custom role no longer exists. Please contact staff.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ Your custom role no longer exists. Please contact staff.", ephemeral=True)
         await interaction.response.send_modal(EditRoleModal(role.name, role.color))
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
     async def preview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You are not eligible.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
         role_id = await get_custom_role(interaction.user.id)
         if not role_id:
-            return await interaction.response.send_message(
-                "❌ You don't have a custom role.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
         role = interaction.guild.get_role(role_id)
         if not role:
-            return await interaction.response.send_message(
-                "❌ Your custom role no longer exists.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
         embed = discord.Embed(
             title="👁️ Role Preview",
@@ -313,9 +307,10 @@ class CustomRolePanelView(discord.ui.View):
             color=role.color,
             timestamp=datetime.now(timezone.utc)
         )
+        # Use role.color.value to get the integer and format as hex
         embed.add_field(
             name="Color",
-            value=f"`#{role.color.to_rgb():06x}`",
+            value=f"`#{role.color.value:06x}`",
             inline=False
         )
         embed.set_footer(text="This is how your role will appear.")
@@ -324,22 +319,13 @@ class CustomRolePanelView(discord.ui.View):
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="cr_delete")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You are not eligible.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
         role_id = await get_custom_role(interaction.user.id)
         if not role_id:
-            return await interaction.response.send_message(
-                "❌ You don't have a custom role.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
         role = interaction.guild.get_role(role_id)
         if not role:
-            return await interaction.response.send_message(
-                "❌ Your custom role no longer exists.",
-                ephemeral=True
-            )
+            return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
 
         confirm_view = ConfirmDeleteView(role.id, interaction.user.id)
         await interaction.response.send_message(
@@ -364,14 +350,14 @@ def build_custom_role_panel():
     embed.add_field(
         name="Instructions",
         value=(
-            "🆕 **Create** – set a name (max 50 chars) and a hex colour.\n"
-            "✏️ **Edit** – change the name or colour.\n"
+            "🆕 **Create** – set a name (max 50 chars) and a hex color.\n"
+            "✏️ **Edit** – change the name or color.\n"
             "👁️ **Preview** – see how your role looks.\n"
             "🗑️ **Delete** – remove your role."
         ),
         inline=False
     )
-    embed.set_footer(text="Role colours are cosmetic – they do not grant any permissions.")
+    embed.set_footer(text="Role colors are cosmetic – they do not grant any permissions.")
     view = CustomRolePanelView()
     return embed, view
 
