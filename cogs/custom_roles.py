@@ -45,7 +45,7 @@ ROLE_ICON_MAP = {
     "blacklisted": 1535669616721002626,
     "linked": 1535663327085076572,
     "verified": 1535554357762850817,
-    "ghoster": 1536325001584578621,   # new icon
+    "ghoster": 1536325001584578621,
 }
 
 # ─── Icon cache ───────────────────────────────────────────
@@ -161,12 +161,11 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
     # ─── 1. Check by name (prevents duplicates) ───────────────────────────
     existing = discord.utils.get(guild.emojis, name=emoji_name)
     if existing:
-        # Found by name – reuse it and store its ID (if not already stored)
         await store_emoji_id(basename, existing.id)
         logger.info(f"✅ Reusing existing emoji '{emoji_name}' (ID: {existing.id})")
         return existing
 
-    # ─── 2. Check stored ID (in case emoji was renamed, but name check failed) ──
+    # ─── 2. Check stored ID (in case emoji was renamed) ──────────────────
     stored_id = await get_stored_emoji_id(basename)
     if stored_id:
         existing = discord.utils.get(guild.emojis, id=stored_id)
@@ -174,7 +173,6 @@ async def ensure_role_emoji(guild: discord.Guild, basename: str, color: discord.
             logger.info(f"✅ Using existing emoji '{emoji_name}' (ID: {stored_id})")
             return existing
         else:
-            # Stored ID is stale – clear it
             await store_emoji_id(basename, None)
 
     # ─── 3. Upload new emoji ──────────────────────────────────────────────
@@ -216,6 +214,8 @@ async def sync_all_role_emojis(guild: discord.Guild):
             results.append(f"✅ `{basename}` → {emoji} (colour #{role.color.value:06x})")
         except Exception as e:
             results.append(f"❌ `{basename}` – {e}")
+        # Small delay to avoid rate limits
+        await asyncio.sleep(0.5)
     return results
 
 
@@ -606,19 +606,11 @@ class CustomRoles(commands.Cog):
 
     async def startup_tasks(self):
         await self.bot.wait_until_ready()
+        # Only ensure the database table exists – do NOT auto‑sync emojis
         await ensure_db()
-
-        guild = self.bot.get_guild(GUILD_ID)
-        if not guild:
-            return
-
-        if not hasattr(self, "_synced"):
-            self._synced = True
-            print("🔄 Generating built‑in role emojis...")
-            results = await sync_all_role_emojis(guild)
-            for line in results:
-                print(f"  {line}")
-            print("✅ Built‑in role emojis ready.")
+        # Optionally, we could check if any emojis are missing and only upload the missing ones,
+        # but to avoid rate limits, we skip auto‑sync entirely.
+        print("✅ Custom Roles database ready (no auto‑sync to avoid rate limits).")
 
     @app_commands.command(
         name="syncemojis",
