@@ -268,7 +268,14 @@ async def ensure_role_emoji(
 
 
 # ─── Sync built‑in roles ──────────────────────────────────
-async def sync_all_role_emojis(guild: discord.Guild):
+async def sync_all_role_emojis(guild: discord.Guild, force_emoji: bool = False):
+    """
+    Update role icons for every entry in ROLE_ICON_MAP.
+
+    Native display_icon is always refreshed (role-edit endpoint, no rate limit).
+    Guild emojis are only created when missing; pass force_emoji=True to delete
+    and recreate them (costs emoji-creation quota — use sparingly).
+    """
     results = []
     for basename, role_id in ROLE_ICON_MAP.items():
         try:
@@ -283,7 +290,7 @@ async def sync_all_role_emojis(guild: discord.Guild):
             primary, secondary = role_colors(role)
             img_bytes = generate_gradient_image(AVAILABLE_ICONS[basename], primary, secondary)
 
-            # Apply as native role icon (requires Level 2+)
+            # Always update the native role icon (role-edit endpoint, no emoji quota)
             icon_note = ""
             try:
                 await role.edit(display_icon=img_bytes)
@@ -291,17 +298,17 @@ async def sync_all_role_emojis(guild: discord.Guild):
             except (discord.Forbidden, discord.HTTPException):
                 icon_note = ""
 
-            # Always (re)generate the guild emoji for use in embeds/messages
+            # Only (re)create the guild emoji if missing or force_emoji=True
             emoji = await ensure_role_emoji(
                 guild, basename,
                 primary_rgb=primary, secondary_rgb=secondary,
-                role_id=role_id, force=True,
+                role_id=role_id, force=force_emoji,
             )
 
             def rgb_hex(t): return f"#{(t[0] << 16 | t[1] << 8 | t[2]):06x}"
             results.append(f"✅ `{basename}` → {emoji}{icon_note} ({rgb_hex(primary)} → {rgb_hex(secondary)})")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         except Exception as e:
             results.append(f"❌ `{basename}` – {e}")
@@ -309,9 +316,9 @@ async def sync_all_role_emojis(guild: discord.Guild):
 
 
 async def _sync_all_icons_bg(guild: discord.Guild):
-    """Run sync_all_role_emojis in the background, swallowing errors."""
+    """Background icon sync — only updates native icons, never recreates emojis."""
     try:
-        await sync_all_role_emojis(guild)
+        await sync_all_role_emojis(guild, force_emoji=False)
         print(f"✅ Background icon sync completed for {guild.name}")
     except Exception as e:
         logger.error(f"Background icon sync failed: {e}")
@@ -971,10 +978,13 @@ class CustomRoles(commands.Cog):
 
     @app_commands.command(
         name="syncemojis",
-        description="Generate/update emojis for all built‑in roles (Staff only)"
+        description="Update role icons for all built-in roles (Staff only)"
+    )
+    @app_commands.describe(
+        force="Delete and recreate guild emojis (uses emoji quota — only if icons look wrong)"
     )
     @app_commands.checks.cooldown(1, 60)
-    async def syncemojis(self, interaction: discord.Interaction):
+    async def syncemojis(self, interaction: discord.Interaction, force: bool = False):
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer(ephemeral=True)
@@ -988,7 +998,7 @@ class CustomRoles(commands.Cog):
             return await interaction.followup.send("❌ You do not have permission.", ephemeral=True)
 
         guild = interaction.guild
-        results = await sync_all_role_emojis(guild)
+        results = await sync_all_role_emojis(guild, force_emoji=force)
 
         embed = discord.Embed(
             title="🔄 Role Emoji Generation Results",
