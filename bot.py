@@ -323,6 +323,7 @@ async def init_database():
                 player2_id      TEXT    NOT NULL,
                 match_type      TEXT    NOT NULL,
                 winner_id       TEXT,
+                score           TEXT,
                 p1_elo_before   INTEGER,
                 p2_elo_before   INTEGER,
                 p1_elo_after    INTEGER,
@@ -330,6 +331,7 @@ async def init_database():
                 channel_id      TEXT,
                 started_at      TEXT    NOT NULL,
                 ended_at        TEXT,
+                timeout_flag    INTEGER DEFAULT 0,
                 created_at      TEXT    NOT NULL
             )"""
         )
@@ -360,6 +362,9 @@ async def init_database():
             "ALTER TABLE users ADD COLUMN pvp_trust REAL DEFAULT 10.0",
             "ALTER TABLE users ADD COLUMN pvp_deny_count INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN pvp_timeout_until TEXT",
+            "ALTER TABLE users ADD COLUMN pvp_banned INTEGER DEFAULT 0",
+            "ALTER TABLE pvp_matches ADD COLUMN score TEXT",
+            "ALTER TABLE pvp_matches ADD COLUMN timeout_flag INTEGER DEFAULT 0",
         ]:
             try:
                 await d1_query(col_sql)
@@ -396,6 +401,7 @@ COGS = [
     "cogs.afk",
     "cogs.profile",
     "cogs.pvp",
+    "cogs.verifyrandom",
 ]
 
 

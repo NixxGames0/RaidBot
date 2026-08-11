@@ -1,70 +1,16 @@
 """
-PvP system scaffold — everything is wired and ready; fill in the stub comments
-when the system launches.
+PvP system — Bo3 format, score-weighted ELO, placement calibration,
+match auto-timeout, rank DMs, leaderboard, stats, moderation tools,
+score dispute system, rematch button.
 
-Flow summary
-────────────
-1. Staff posts the PvP panel (/pvpsendpanel).
-2. Player clicks "Start PvP" → ephemeral match-type picker (Ranked / Casual).
-3. Player selects type → enters the queue (in-memory).
-4. Background task (every 5 s) matches pairs:
-     Ranked : ELO window starts ±50, widens ±25 every 30 s, caps at ±300.
-              Trust factor routes low-trust (<7) players together first.
-     Casual : random pairing from casual queue.
-5. Match found → both players get a DM with Accept / Deny buttons (60 s timeout).
-     Deny-ranked → queue timeout (5 min, doubles per offence, resets weekly).
-     Deny-casual → silently removed from queue.
-6. Both accept → private text channel created (players + Mod+), match panel sent.
-7. Either player clicks "End PvP" → winner dropdown → ELO updated, channel deleted.
-8. Report button → reason prompt → logged for staff review; affects trust factor.
-9. After every match: percentile ranks are recomputed and Discord roles updated.
-
-DB additions needed when launching (run via /pvpsetup or init_database):
-    ALTER TABLE users ADD COLUMN pvp_elo            INTEGER DEFAULT 1000;
-    ALTER TABLE users ADD COLUMN pvp_wins           INTEGER DEFAULT 0;
-    ALTER TABLE users ADD COLUMN pvp_losses         INTEGER DEFAULT 0;
-    ALTER TABLE users ADD COLUMN pvp_placement_done INTEGER DEFAULT 0;
-    ALTER TABLE users ADD COLUMN pvp_placement_left INTEGER DEFAULT 10;
-    ALTER TABLE users ADD COLUMN pvp_rank           TEXT    DEFAULT 'Unranked';
-    ALTER TABLE users ADD COLUMN pvp_trust          REAL    DEFAULT 10.0;
-    ALTER TABLE users ADD COLUMN pvp_deny_count     INTEGER DEFAULT 0;
-    ALTER TABLE users ADD COLUMN pvp_timeout_until  TEXT;
-
-    CREATE TABLE IF NOT EXISTS pvp_matches (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        match_id        TEXT    NOT NULL UNIQUE,
-        player1_id      TEXT    NOT NULL,
-        player2_id      TEXT    NOT NULL,
-        match_type      TEXT    NOT NULL,
-        winner_id       TEXT,
-        p1_elo_before   INTEGER,
-        p2_elo_before   INTEGER,
-        p1_elo_after    INTEGER,
-        p2_elo_after    INTEGER,
-        channel_id      TEXT,
-        started_at      TEXT    NOT NULL,
-        ended_at        TEXT,
-        created_at      TEXT    NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS pvp_reports (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        reporter_id TEXT NOT NULL,
-        reported_id TEXT NOT NULL,
-        match_id    TEXT,
-        reason      TEXT NOT NULL,
-        created_at  TEXT NOT NULL,
-        reviewed    INTEGER DEFAULT 0,
-        action_taken TEXT
-    );
+DB handled by bot.py init_database.
 """
 
 import uuid
 import asyncio
-import json
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
 
 from bot import (
@@ -77,16 +23,26 @@ from bot import (
     is_staff,
 )
 
-# ── Config ────────────────────────────────────────────────────────────────────
-PVP_CHANNEL_ID: int = 1536655138754789386
-PVP_CATEGORY_ID: int = 1536654892947603516
-PLACEMENT_MATCHES = 10         # matches before a rank is assigned
-BASE_ELO = 1000
-K_FACTOR_NEW = 32              # K for < 30 matches
-K_FACTOR_EST = 16              # K for >= 30 matches
+# ── Config ─────────────────────────────────────────────────────────────────────
+PVP_CHANNEL_ID: int    = 1536655138754789386
+PVP_CATEGORY_ID: int   = 1536654892947603516
+PLACEMENT_MATCHES      = 10
+BASE_ELO               = 1000
+K_FACTOR_NEW           = 32
+K_FACTOR_EST           = 16
+MATCH_TIMEOUT_WARN_S   = 1800   # 30 min → ping warning in channel
+MATCH_TIMEOUT_DELETE_S = 2400   # 40 min → ELO penalty + delete
+TIMEOUT_ELO_PENALTY    = 75     # ELO lost by each player on ranked timeout
+ELO_DECAY_AMOUNT       = 10     # ELO lost per inactive week (above 1000)
+ELO_DECAY_INACTIVE_WKS = 4      # weeks of inactivity before decay starts
 
-# ── Rank tiers (percentile, display_name, role_id) ───────────────────────────
-# Role IDs are 0 until you create the roles; update them here.
+# Bo3 result weights: (winner_result, loser_result) used in Elo formula
+SCORE_WEIGHTS = {
+    "2-0": (1.00, 0.00),
+    "2-1": (0.75, 0.25),
+}
+
+# ── Rank tiers ─────────────────────────────────────────────────────────────────
 RANK_TIERS = [
     (0.01, "Master",   1536656379308285984),
     (0.05, "Amethyst", 1536658641346895892),
@@ -95,49 +51,81 @@ RANK_TIERS = [
     (0.55, "Silver",   1536658921912012881),
     (1.00, "Bronze",   1536658975356092416),
 ]
-UNRANKED_ROLE_ID = 1536659018549039214
-# All rank role IDs (for cleanup before assigning new rank)
+UNRANKED_ROLE_ID  = 1536659018549039214
 ALL_RANK_ROLE_IDS = {t[2] for t in RANK_TIERS} | {UNRANKED_ROLE_ID}
 
-# ── In-memory state ───────────────────────────────────────────────────────────
-# queue[guild_id][user_id] = QueueEntry dict
-pvp_queue: dict[int, dict[int, dict]] = {}
+_RANK_ORDER = ["Unranked", "Bronze", "Silver", "Gold", "Platinum", "Amethyst", "Master"]
 
-# active_matches[match_id] = MatchState dict
-pvp_active_matches: dict[str, dict] = {}
-
-# pending_confirmations[match_id] = {p1_accepted, p2_accepted, expiry, ...}
-pvp_pending: dict[str, dict] = {}
+# ── In-memory state ────────────────────────────────────────────────────────────
+pvp_queue: dict[int, dict[int, dict]]   = {}   # guild_id → {user_id → entry}
+pvp_active_matches: dict[str, dict]     = {}   # match_id → state
+pvp_pending: dict[str, dict]            = {}   # match_id → confirmation state
+pvp_pending_scores: dict[str, dict]     = {}   # match_id → submitted score state
 
 
-# ── ELO helpers ───────────────────────────────────────────────────────────────
+# ── ELO helpers ────────────────────────────────────────────────────────────────
 
-def elo_change(winner_elo: int, loser_elo: int, matches_played: int) -> tuple[int, int]:
-    """Standard Elo formula. Returns (winner_new_elo, loser_new_elo)."""
-    k = K_FACTOR_NEW if matches_played < 30 else K_FACTOR_EST
-    expected = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
-    delta = int(k * (1 - expected))
-    return winner_elo + delta, loser_elo - delta
+def _k_factor(placement_left: int, total_matches: int) -> int:
+    """K-factor: high during placements (250 → halving), then standard K."""
+    if placement_left > 0:
+        idx = PLACEMENT_MATCHES - placement_left  # 0 on first placement match
+        return max(K_FACTOR_EST, 250 // (2 ** idx))
+    return K_FACTOR_NEW if total_matches < 30 else K_FACTOR_EST
+
+
+def elo_change_bo3(
+    winner_elo: int,
+    loser_elo: int,
+    score: str,
+    w_placement_left: int,
+    l_placement_left: int,
+    w_total: int,
+    l_total: int,
+    match_type: str,
+) -> tuple[int, int, int, int]:
+    """
+    Returns (new_winner_elo, new_loser_elo, winner_delta, loser_delta).
+
+    Score-weighted result values (2-0 win = full credit; 2-1 = partial).
+    Standard relative ELO: beating higher-ranked = bigger gain; losing to
+    lower-ranked = bigger loss.
+    Post-placement casual matches return 0 delta for the non-placing player.
+    """
+    w_in_elo = match_type == "ranked" or w_placement_left > 0
+    l_in_elo = match_type == "ranked" or l_placement_left > 0
+
+    w_result, l_result = SCORE_WEIGHTS.get(score, (1.0, 0.0))
+    expected_w = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
+    expected_l = 1 - expected_w
+
+    k_w = _k_factor(w_placement_left, w_total) if w_in_elo else 0
+    k_l = _k_factor(l_placement_left, l_total) if l_in_elo else 0
+
+    w_delta = int(k_w * (w_result - expected_w))
+    l_delta = int(k_l * (l_result - expected_l))
+
+    return (
+        max(0, winner_elo + w_delta),
+        max(0, loser_elo + l_delta),
+        w_delta,
+        l_delta,
+    )
 
 
 async def compute_pvp_rank(elo: int) -> str:
-    """
-    Percentile-based rank: query total ranked players and this user's position,
-    then assign tier by percentile.  Returns rank name string.
-    """
     total_row = await d1_query(
         "SELECT COUNT(*) AS n FROM users WHERE pvp_placement_done = 1"
     )
     total = total_row["results"][0]["n"] if total_row["results"] else 0
     if total < 10:
-        return "Bronze"  # default until enough players exist
+        return "Bronze"
 
     above_row = await d1_query(
         "SELECT COUNT(*) AS n FROM users WHERE pvp_elo > ? AND pvp_placement_done = 1",
         [elo]
     )
-    above = (above_row["results"][0]["n"] or 0)
-    pct = (above + 1) / total  # 0.01 = top 1%
+    above = above_row["results"][0]["n"] or 0
+    pct = (above + 1) / total
 
     for threshold, name, _ in RANK_TIERS:
         if pct <= threshold:
@@ -146,17 +134,14 @@ async def compute_pvp_rank(elo: int) -> str:
 
 
 async def update_pvp_rank_role(member: discord.Member, new_rank: str):
-    """Strip all rank roles then assign the correct one."""
     to_remove = [r for r in member.roles if r.id in ALL_RANK_ROLE_IDS]
     if to_remove:
         await member.remove_roles(*to_remove, reason="PvP rank update")
-
     if new_rank == "Unranked":
         role = member.guild.get_role(UNRANKED_ROLE_ID)
         if role:
             await member.add_roles(role, reason="PvP rank: Unranked")
         return
-
     for _, name, role_id in RANK_TIERS:
         if name == new_rank:
             role = member.guild.get_role(role_id)
@@ -165,58 +150,364 @@ async def update_pvp_rank_role(member: discord.Member, new_rank: str):
             break
 
 
-# ── Matchmaking helpers ───────────────────────────────────────────────────────
-
-def _deny_timeout_seconds(deny_count: int) -> int:
-    """5 min → 10 → 20 → 30 (capped). Resets weekly."""
-    return min(300 * (2 ** deny_count), 1800)
-
-
-def _find_ranked_pairs(queue: dict[int, dict]) -> list[tuple[int, int]]:
-    now = datetime.now(timezone.utc)
-    pairs = []
-    remaining = set(queue)
-
-    for uid1 in list(remaining):
-        if uid1 not in remaining:
-            continue
-        d1 = queue[uid1]
-        wait = (now - d1["joined_at"]).total_seconds()
-        elo_window = min(50 + int(wait / 30) * 25, 300)
-
-        best = None
-        for uid2 in remaining:
-            if uid2 == uid1:
-                continue
-            d2 = queue[uid2]
-            if abs(d1["elo"] - d2["elo"]) > elo_window:
-                continue
-            # Prefer same trust tier: both high (>=7) or both low (<7)
-            same_tier = (d1["trust"] >= 7) == (d2["trust"] >= 7)
-            if best is None or same_tier:
-                best = uid2
-            if same_tier:
-                break  # found ideal match
-
-        if best is not None:
-            pairs.append((uid1, best))
-            remaining.discard(uid1)
-            remaining.discard(best)
-
-    return pairs
+async def _send_rank_change_dm(bot: commands.Bot, user_id: int, old_rank: str, new_rank: str):
+    if old_rank == new_rank or user_id < 0:
+        return
+    try:
+        user = await bot.fetch_user(user_id)
+        old_idx = _RANK_ORDER.index(old_rank) if old_rank in _RANK_ORDER else -1
+        new_idx = _RANK_ORDER.index(new_rank) if new_rank in _RANK_ORDER else -1
+        arrow = "📈 Promoted to" if new_idx > old_idx else "📉 Demoted to"
+        await user.send(f"{arrow} **{new_rank}**! (was {old_rank})")
+    except Exception:
+        pass
 
 
-# ── Match invitation DM ───────────────────────────────────────────────────────
+# ── Match result application ───────────────────────────────────────────────────
+
+async def _apply_match_result(
+    bot: commands.Bot,
+    match_id: str,
+    winner_id: int,
+    loser_id: int,
+    score: str,
+    guild: discord.Guild | None = None,
+) -> discord.Embed | None:
+    """
+    Apply ELO, W/L, placement, ranks, and roles for a completed match.
+    Returns a summary embed (caller sends it; caller handles channel deletion).
+    """
+    match = pvp_active_matches.get(match_id)
+    match_type = match.get("match_type", "casual") if match else "casual"
+
+    w_row = await d1_query(
+        "SELECT pvp_elo, pvp_wins, pvp_losses, pvp_placement_left, "
+        "pvp_placement_done, pvp_rank FROM users WHERE discord_id = ?",
+        [str(winner_id)]
+    )
+    l_row = await d1_query(
+        "SELECT pvp_elo, pvp_wins, pvp_losses, pvp_placement_left, "
+        "pvp_placement_done, pvp_rank FROM users WHERE discord_id = ?",
+        [str(loser_id)]
+    )
+    if not w_row["results"] or not l_row["results"]:
+        return None
+
+    wd = w_row["results"][0]
+    ld = l_row["results"][0]
+
+    w_elo           = wd.get("pvp_elo")            or BASE_ELO
+    l_elo           = ld.get("pvp_elo")            or BASE_ELO
+    w_wins          = wd.get("pvp_wins")           or 0
+    w_losses        = wd.get("pvp_losses")         or 0
+    l_wins          = ld.get("pvp_wins")           or 0
+    l_losses        = ld.get("pvp_losses")         or 0
+    w_pleft         = wd.get("pvp_placement_left") or 0
+    l_pleft         = ld.get("pvp_placement_left") or 0
+    w_pdone         = bool(wd.get("pvp_placement_done"))
+    l_pdone         = bool(ld.get("pvp_placement_done"))
+    w_old_rank      = wd.get("pvp_rank")           or "Unranked"
+    l_old_rank      = ld.get("pvp_rank")           or "Unranked"
+
+    new_w_elo, new_l_elo, w_delta, l_delta = elo_change_bo3(
+        w_elo, l_elo, score,
+        w_pleft, l_pleft,
+        w_wins + w_losses, l_wins + l_losses,
+        match_type,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    new_w_pleft = max(0, w_pleft - 1) if (match_type == "casual" and w_pleft > 0) else w_pleft
+    new_l_pleft = max(0, l_pleft - 1) if (match_type == "casual" and l_pleft > 0) else l_pleft
+    new_w_pdone = 1 if (new_w_pleft == 0 or w_pdone) else 0
+    new_l_pdone = 1 if (new_l_pleft == 0 or l_pdone) else 0
+
+    await d1_query(
+        """UPDATE users SET pvp_elo = ?, pvp_wins = pvp_wins + 1,
+           pvp_placement_left = ?, pvp_placement_done = ?, updated_at = ?
+           WHERE discord_id = ?""",
+        [new_w_elo, new_w_pleft, new_w_pdone, now, str(winner_id)]
+    )
+    await d1_query(
+        """UPDATE users SET pvp_elo = ?, pvp_losses = pvp_losses + 1,
+           pvp_placement_left = ?, pvp_placement_done = ?, updated_at = ?
+           WHERE discord_id = ?""",
+        [new_l_elo, new_l_pleft, new_l_pdone, now, str(loser_id)]
+    )
+
+    # Compute new ranks (only if placement done)
+    w_new_rank = await compute_pvp_rank(new_w_elo) if new_w_pdone else "Unranked"
+    l_new_rank = await compute_pvp_rank(new_l_elo) if new_l_pdone else "Unranked"
+
+    await d1_query("UPDATE users SET pvp_rank = ? WHERE discord_id = ?", [w_new_rank, str(winner_id)])
+    await d1_query("UPDATE users SET pvp_rank = ? WHERE discord_id = ?", [l_new_rank, str(loser_id)])
+
+    if guild:
+        for uid, rank in ((winner_id, w_new_rank), (loser_id, l_new_rank)):
+            m = guild.get_member(uid)
+            if m:
+                try:
+                    await update_pvp_rank_role(m, rank)
+                except Exception:
+                    pass
+
+    await _send_rank_change_dm(bot, winner_id, w_old_rank, w_new_rank)
+    await _send_rank_change_dm(bot, loser_id,  l_old_rank, l_new_rank)
+
+    await d1_query(
+        """UPDATE pvp_matches
+           SET winner_id = ?, score = ?, p1_elo_after = ?, p2_elo_after = ?, ended_at = ?
+           WHERE match_id = ?""",
+        [str(winner_id), score, new_w_elo, new_l_elo, now, match_id]
+    )
+
+    pvp_active_matches.pop(match_id, None)
+    pvp_pending_scores.pop(match_id, None)
+
+    w_sign = f"+{w_delta}" if w_delta >= 0 else str(w_delta)
+    l_sign = f"+{l_delta}" if l_delta >= 0 else str(l_delta)
+    affects_elo = match_type == "ranked" or w_pleft > 0 or l_pleft > 0
+
+    embed = discord.Embed(
+        title=f"🏆 Match Complete — {score}",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Winner", value=f"<@{winner_id}>", inline=True)
+    embed.add_field(name="Score",  value=score,             inline=True)
+    embed.add_field(name="​", value="​",          inline=True)
+
+    if affects_elo:
+        embed.add_field(
+            name="ELO Changes",
+            value=(
+                f"<@{winner_id}> **{new_w_elo}** ({w_sign})\n"
+                f"<@{loser_id}> **{new_l_elo}** ({l_sign})"
+            ),
+            inline=False,
+        )
+
+    rank_lines = []
+    if w_new_rank != w_old_rank:
+        rank_lines.append(f"<@{winner_id}> {w_old_rank} → **{w_new_rank}**")
+    if l_new_rank != l_old_rank:
+        rank_lines.append(f"<@{loser_id}> {l_old_rank} → **{l_new_rank}**")
+    if rank_lines:
+        embed.add_field(name="Rank Change", value="\n".join(rank_lines), inline=False)
+
+    if not new_w_pdone:
+        embed.set_footer(text=f"Placement: {new_w_pleft} match(es) remaining for winner")
+
+    return embed
+
+
+async def _apply_timeout_penalty(
+    bot: commands.Bot,
+    match_id: str,
+    guild: discord.Guild | None = None,
+) -> str:
+    """
+    Deduct ELO from both players and record the timeout in DB.
+    Returns a status message string.
+    """
+    match = pvp_active_matches.get(match_id)
+    if not match:
+        return "Match not found."
+
+    p1_id = match["player1"]
+    p2_id = match["player2"]
+    match_type = match.get("match_type", "casual")
+
+    now = datetime.now(timezone.utc).isoformat()
+    note = ""
+
+    if match_type == "ranked":
+        for uid in (p1_id, p2_id):
+            await d1_query(
+                "UPDATE users SET pvp_elo = MAX(0, pvp_elo - ?), "
+                "pvp_trust = MAX(0, pvp_trust - 1), updated_at = ? WHERE discord_id = ?",
+                [TIMEOUT_ELO_PENALTY, now, str(uid)]
+            )
+        # Recalculate ranks
+        if guild:
+            for uid in (p1_id, p2_id):
+                row = await d1_query(
+                    "SELECT pvp_elo, pvp_placement_done FROM users WHERE discord_id = ?",
+                    [str(uid)]
+                )
+                if row["results"]:
+                    r = row["results"][0]
+                    if r.get("pvp_placement_done"):
+                        new_elo  = r["pvp_elo"] or BASE_ELO
+                        new_rank = await compute_pvp_rank(new_elo)
+                        await d1_query(
+                            "UPDATE users SET pvp_rank = ? WHERE discord_id = ?",
+                            [new_rank, str(uid)]
+                        )
+                        m = guild.get_member(uid)
+                        if m:
+                            try:
+                                await update_pvp_rank_role(m, new_rank)
+                            except Exception:
+                                pass
+        note = f" Both players lost **{TIMEOUT_ELO_PENALTY} ELO** and **1 trust point**."
+    else:
+        # Casual timeout: reduce trust only
+        for uid in (p1_id, p2_id):
+            await d1_query(
+                "UPDATE users SET pvp_trust = MAX(0, pvp_trust - 0.5), updated_at = ? WHERE discord_id = ?",
+                [now, str(uid)]
+            )
+
+    await d1_query(
+        "UPDATE pvp_matches SET ended_at = ?, timeout_flag = 1 WHERE match_id = ?",
+        [now, match_id]
+    )
+    pvp_active_matches.pop(match_id, None)
+    pvp_pending_scores.pop(match_id, None)
+    return note
+
+
+# ── Score dispute / confirmation view ─────────────────────────────────────────
+
+class ScoreResultView(discord.ui.View):
+    """
+    Sent in the match channel after one player submits a score.
+    The other player can Confirm (auto-applies) or Dispute (pings mods).
+    Auto-applies after 5 minutes if no response.
+    """
+    def __init__(
+        self,
+        bot: commands.Bot,
+        match_id: str,
+        winner_id: int,
+        loser_id: int,
+        score: str,
+        channel: discord.TextChannel,
+        guild: discord.Guild,
+        p1_id: int,
+        p2_id: int,
+        guild_id: int,
+        submitter_id: int,
+    ):
+        super().__init__(timeout=300)
+        self._bot         = bot
+        self.match_id     = match_id
+        self.winner_id    = winner_id
+        self.loser_id     = loser_id
+        self.score        = score
+        self._channel     = channel
+        self._guild       = guild
+        self._p1_id       = p1_id
+        self._p2_id       = p2_id
+        self._guild_id    = guild_id
+        self._submitter   = submitter_id
+        self._resolved    = False
+
+    async def _resolve(self, interaction: discord.Interaction | None = None):
+        if self._resolved:
+            return
+        self._resolved = True
+        self.stop()
+
+        for child in self.children:
+            child.disabled = True
+
+        if interaction:
+            await interaction.response.defer()
+
+        embed = await _apply_match_result(
+            self._bot, self.match_id,
+            self.winner_id, self.loser_id, self.score, self._guild
+        )
+        if self._channel:
+            try:
+                view = RematchView(self._p1_id, self._p2_id, self._guild_id)
+                await self._channel.send(embed=embed, view=view)
+                await asyncio.sleep(15)
+                await self._channel.delete(reason="PvP match ended")
+            except Exception:
+                pass
+
+    @discord.ui.button(label="Confirm Result", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self._p1_id, self._p2_id):
+            return await interaction.response.send_message("❌ Not a match participant.", ephemeral=True)
+        await self._resolve(interaction)
+
+    @discord.ui.button(label="Dispute", style=discord.ButtonStyle.danger, emoji="🚫")
+    async def dispute(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self._p1_id, self._p2_id):
+            return await interaction.response.send_message("❌ Not a match participant.", ephemeral=True)
+        if self._resolved:
+            return await interaction.response.send_message("Already resolved.", ephemeral=True)
+        self._resolved = True
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.send_message(
+            f"🚫 **Score disputed by {interaction.user.mention}.** "
+            f"<@&{MOD_ROLE_ID}> please review this match (`{self.match_id}`).",
+        )
+        pvp_pending_scores.pop(self.match_id, None)
+
+    async def on_timeout(self):
+        await self._resolve()
+
+
+# ── Rematch button ─────────────────────────────────────────────────────────────
+
+class RematchView(discord.ui.View):
+    def __init__(self, p1_id: int, p2_id: int, guild_id: int):
+        super().__init__(timeout=60)
+        self._p1_id    = p1_id
+        self._p2_id    = p2_id
+        self._guild_id = guild_id
+        self._p1_ready = False
+        self._p2_ready = False
+
+    @discord.ui.button(label="Rematch (casual)", style=discord.ButtonStyle.blurple, emoji="🔄")
+    async def rematch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self._p1_id, self._p2_id):
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        if interaction.user.id == self._p1_id:
+            self._p1_ready = True
+        else:
+            self._p2_ready = True
+
+        if self._p1_ready and self._p2_ready:
+            self.stop()
+            await interaction.response.send_message("⚔️ Creating rematch channel...")
+            match_id = str(uuid.uuid4())[:8]
+            now_iso  = datetime.now(timezone.utc).isoformat()
+            await d1_query(
+                """INSERT INTO pvp_matches
+                   (match_id, player1_id, player2_id, match_type, started_at, created_at)
+                   VALUES (?, ?, ?, 'casual', ?, ?)""",
+                [match_id, str(self._p1_id), str(self._p2_id), now_iso, now_iso]
+            )
+            asyncio.ensure_future(_create_match_channel(
+                interaction.client, self._guild_id, match_id,
+                self._p1_id, self._p2_id, "casual"
+            ))
+        else:
+            await interaction.response.send_message(
+                "✅ Waiting for your opponent to accept the rematch...", ephemeral=True
+            )
+
+
+# ── Match invitation DM ────────────────────────────────────────────────────────
 
 class MatchFoundView(discord.ui.View):
     def __init__(self, match_id: str, guild_id: int, for_user_id: int):
         super().__init__(timeout=60)
-        self.match_id = match_id
-        self.guild_id = guild_id
-        self.for_user_id = for_user_id
+        self.match_id     = match_id
+        self.guild_id     = guild_id
+        self.for_user_id  = for_user_id
 
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅",
-                       custom_id="pvp_match_accept")
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.for_user_id:
             return await interaction.response.send_message("❌ This isn't for you.", ephemeral=True)
@@ -232,7 +523,6 @@ class MatchFoundView(discord.ui.View):
             pending["p2_accepted"] = True
 
         if pending["p1_accepted"] and pending["p2_accepted"]:
-            # Pop atomically — whichever accept() wins the race creates the channel
             pending_data = pvp_pending.pop(self.match_id, None)
             await interaction.response.send_message(
                 "✅ Both players accepted! Creating your match channel...", ephemeral=True)
@@ -248,11 +538,9 @@ class MatchFoundView(discord.ui.View):
         else:
             await interaction.response.send_message(
                 "✅ Accepted! Waiting for the other player...", ephemeral=True)
-
         self.stop()
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="✖️",
-                       custom_id="pvp_match_deny")
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="✖️")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.for_user_id:
             return await interaction.response.send_message("❌ This isn't for you.", ephemeral=True)
@@ -264,138 +552,148 @@ class MatchFoundView(discord.ui.View):
         match_type = pending.get("match_type", "casual")
 
         if match_type == "ranked":
-            # Apply queue timeout
             row = await d1_query(
                 "SELECT pvp_deny_count FROM users WHERE discord_id = ?",
                 [str(interaction.user.id)]
             )
-            deny_count = (row["results"][0]["pvp_deny_count"] or 0) if row["results"] else 0
-            timeout_s = _deny_timeout_seconds(deny_count)
+            deny_count   = (row["results"][0]["pvp_deny_count"] or 0) if row["results"] else 0
+            timeout_s    = _deny_timeout_seconds(deny_count)
             timeout_until = (datetime.now(timezone.utc) + timedelta(seconds=timeout_s)).isoformat()
             await d1_query(
                 "UPDATE users SET pvp_deny_count = pvp_deny_count + 1, pvp_timeout_until = ? WHERE discord_id = ?",
                 [timeout_until, str(interaction.user.id)]
             )
             await interaction.response.send_message(
-                f"❌ Ranked denial — you are in queue timeout for **{timeout_s // 60} minutes**.",
-                ephemeral=True
+                f"❌ Ranked denial — queue timeout for **{timeout_s // 60} minutes**.",
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message("✅ Match declined.", ephemeral=True)
 
-        # Notify the other player
-        other_id = pending["player2"] if interaction.user.id == pending["player1"] else pending["player1"]
+        # Notify and re-queue the other player
+        other_id  = pending["player2"] if interaction.user.id == pending["player1"] else pending["player1"]
+        guild_id  = pending.get("guild_id", self.guild_id)
         try:
             other = await interaction.client.fetch_user(other_id)
-            await other.send("❌ Your opponent declined the match. You have been returned to the queue.")
-            # Re-queue other player
-            guild_queue = pvp_queue.setdefault(self.guild_id, {})
-            if other_id not in guild_queue:
-                # TODO: restore their queue entry from pending data
-                pass
+            await other.send("❌ Your opponent declined the match. You've been returned to the queue.")
         except Exception:
             pass
+
+        guild_queue = pvp_queue.setdefault(guild_id, {})
+        if other_id not in guild_queue:
+            o_row = await d1_query(
+                "SELECT pvp_elo, pvp_trust FROM users WHERE discord_id = ?", [str(other_id)]
+            )
+            if o_row["results"]:
+                guild_queue[other_id] = {
+                    "type": match_type,
+                    "elo":   o_row["results"][0].get("pvp_elo")   or BASE_ELO,
+                    "trust": o_row["results"][0].get("pvp_trust") or 10.0,
+                    "joined_at": datetime.now(timezone.utc),
+                }
         self.stop()
 
 
-# ── Match channel panel ────────────────────────────────────────────────────────
+# ── Bo3 score submission ───────────────────────────────────────────────────────
 
-class MatchWinnerSelect(discord.ui.Select):
-    def __init__(self, player1: discord.Member, player2: discord.Member, match_id: str):
+class Bo3ScoreSelect(discord.ui.Select):
+    def __init__(self, p1: discord.Member, p2: discord.Member, match_id: str):
         self.match_id = match_id
+        self._p1 = p1
+        self._p2 = p2
         options = [
-            discord.SelectOption(label=player1.display_name, value=str(player1.id),
-                                 description="Select as winner"),
-            discord.SelectOption(label=player2.display_name, value=str(player2.id),
-                                 description="Select as winner"),
+            discord.SelectOption(
+                label=f"{p1.display_name[:40]} wins 2-0",
+                value=f"{p1.id}_2-0",
+                description="2-0 victory for " + p1.display_name[:40],
+                emoji="🏆",
+            ),
+            discord.SelectOption(
+                label=f"{p1.display_name[:40]} wins 2-1",
+                value=f"{p1.id}_2-1",
+                description="2-1 victory for " + p1.display_name[:40],
+                emoji="🏆",
+            ),
+            discord.SelectOption(
+                label=f"{p2.display_name[:40]} wins 2-0",
+                value=f"{p2.id}_2-0",
+                description="2-0 victory for " + p2.display_name[:40],
+                emoji="🏆",
+            ),
+            discord.SelectOption(
+                label=f"{p2.display_name[:40]} wins 2-1",
+                value=f"{p2.id}_2-1",
+                description="2-1 victory for " + p2.display_name[:40],
+                emoji="🏆",
+            ),
         ]
-        super().__init__(placeholder="Select the winner...", options=options)
+        super().__init__(
+            placeholder="📊 Submit Bo3 result...",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
 
     async def callback(self, interaction: discord.Interaction):
-        winner_id = int(self.values[0])
         match = pvp_active_matches.get(self.match_id)
         if not match:
             return await interaction.response.send_message("❌ Match not found.", ephemeral=True)
 
         if interaction.user.id not in (match["player1"], match["player2"]):
             return await interaction.response.send_message(
-                "❌ Only match participants can declare a winner.", ephemeral=True)
+                "❌ Only match participants can submit the result.", ephemeral=True)
 
-        await interaction.response.defer(ephemeral=True)
-        loser_id = match["player2"] if winner_id == match["player1"] else match["player1"]
+        if self.match_id in pvp_pending_scores:
+            return await interaction.response.send_message(
+                "❌ A score is already pending confirmation. Use Confirm or Dispute.",
+                ephemeral=True,
+            )
 
-        # Update ELO
-        w_row = await d1_query(
-            "SELECT pvp_elo, pvp_wins, pvp_losses FROM users WHERE discord_id = ?",
-            [str(winner_id)]
-        )
-        l_row = await d1_query(
-            "SELECT pvp_elo, pvp_losses FROM users WHERE discord_id = ?",
-            [str(loser_id)]
-        )
-        if not w_row["results"] or not l_row["results"]:
-            return await interaction.followup.send("❌ Could not fetch player ELO.", ephemeral=True)
+        winner_id_str, score = self.values[0].rsplit("_", 1)
+        winner_id = int(winner_id_str)
+        loser_id  = match["player2"] if winner_id == match["player1"] else match["player1"]
 
-        w_elo = w_row["results"][0]["pvp_elo"] or BASE_ELO
-        l_elo = l_row["results"][0]["pvp_elo"] or BASE_ELO
-        w_wins  = (w_row["results"][0]["pvp_wins"]   or 0) + 1
-        l_losses= (l_row["results"][0]["pvp_losses"] or 0) + 1
-        total_matches = w_wins + (w_row["results"][0]["pvp_losses"] or 0)
+        pvp_pending_scores[self.match_id] = {
+            "winner_id":    winner_id,
+            "loser_id":     loser_id,
+            "score":        score,
+            "submitter_id": interaction.user.id,
+        }
 
-        new_w_elo, new_l_elo = elo_change(w_elo, l_elo, total_matches)
-
-        now = datetime.now(timezone.utc).isoformat()
-        await d1_query(
-            "UPDATE users SET pvp_elo = ?, pvp_wins = ?, updated_at = ? WHERE discord_id = ?",
-            [new_w_elo, w_wins, now, str(winner_id)]
-        )
-        await d1_query(
-            "UPDATE users SET pvp_elo = ?, pvp_losses = ?, updated_at = ? WHERE discord_id = ?",
-            [new_l_elo, l_losses, now, str(loser_id)]
-        )
-
-        # Recalculate ranks
-        w_rank = await compute_pvp_rank(new_w_elo)
-        l_rank = await compute_pvp_rank(new_l_elo)
-        await d1_query("UPDATE users SET pvp_rank = ? WHERE discord_id = ?", [w_rank, str(winner_id)])
-        await d1_query("UPDATE users SET pvp_rank = ? WHERE discord_id = ?", [l_rank, str(loser_id)])
-
-        # Update roles
-        guild = interaction.guild
-        for uid, rank in ((winner_id, w_rank), (loser_id, l_rank)):
-            m = guild.get_member(uid)
-            if m:
-                await update_pvp_rank_role(m, rank)
-
-        # Save match to DB
-        await d1_query(
-            """UPDATE pvp_matches
-               SET winner_id = ?, p1_elo_after = ?, p2_elo_after = ?, ended_at = ?
-               WHERE match_id = ?""",
-            [str(winner_id), new_w_elo, new_l_elo, now, self.match_id]
-        )
+        winner_mention = f"<@{winner_id}>"
+        loser_mention  = f"<@{loser_id}>"
 
         embed = discord.Embed(
-            title="🏆 Match Complete",
-            color=discord.Color.green(),
-            timestamp=datetime.now(timezone.utc)
+            title="📊 Score Submitted",
+            description=(
+                f"{interaction.user.mention} reported: {winner_mention} **wins {score}**\n\n"
+                f"**{loser_mention}** — confirm or dispute below.\n"
+                "Auto-confirms in 5 minutes if no response."
+            ),
+            color=discord.Color.orange(),
         )
-        embed.add_field(name="Winner", value=f"<@{winner_id}> (**{new_w_elo}** ELO)", inline=True)
-        embed.add_field(name="Loser",  value=f"<@{loser_id}> (**{new_l_elo}** ELO)", inline=True)
-        embed.add_field(name="Rank Update",
-                        value=f"<@{winner_id}> → **{w_rank}**\n<@{loser_id}> → **{l_rank}**",
-                        inline=False)
-        await interaction.followup.send(embed=embed)
 
-        pvp_active_matches.pop(self.match_id, None)
-        await asyncio.sleep(10)
-        if interaction.channel:
-            await interaction.channel.delete(reason="PvP match ended")
+        view = ScoreResultView(
+            bot=interaction.client,
+            match_id=self.match_id,
+            winner_id=winner_id,
+            loser_id=loser_id,
+            score=score,
+            channel=interaction.channel,
+            guild=interaction.guild,
+            p1_id=match["player1"],
+            p2_id=match["player2"],
+            guild_id=interaction.guild_id,
+            submitter_id=interaction.user.id,
+        )
+        await interaction.response.send_message(embed=embed, view=view)
 
+
+# ── Report flow ────────────────────────────────────────────────────────────────
 
 class ReportModal(discord.ui.Modal, title="Report Player"):
     reason = discord.ui.TextInput(
-        label="Reason for report",
+        label="Reason",
         placeholder="Describe the issue...",
         style=discord.TextStyle.paragraph,
         max_length=500,
@@ -413,23 +711,18 @@ class ReportModal(discord.ui.Modal, title="Report Player"):
             """INSERT INTO pvp_reports
                (reporter_id, reported_id, match_id, reason, created_at)
                VALUES (?, ?, ?, ?, ?)""",
-            [str(self.reporter_id), str(self.reported_id),
-             self.match_id, self.reason.value, now]
+            [str(self.reporter_id), str(self.reported_id), self.match_id, self.reason.value, now]
         )
-        # Check total unreviewed reports against this player to adjust trust
-        rep_count_row = await d1_query(
+        rep_row = await d1_query(
             "SELECT COUNT(*) AS n FROM pvp_reports WHERE reported_id = ? AND reviewed = 0",
             [str(self.reported_id)]
         )
-        rep_count = rep_count_row["results"][0]["n"] if rep_count_row["results"] else 0
-
-        # Each 3 unreviewed reports nudges trust down by 0.5
+        rep_count = rep_row["results"][0]["n"] if rep_row["results"] else 0
         if rep_count % 3 == 0:
             await d1_query(
                 "UPDATE users SET pvp_trust = MAX(0, pvp_trust - 0.5) WHERE discord_id = ?",
                 [str(self.reported_id)]
             )
-
         await interaction.response.send_message(
             "✅ Report submitted. Staff will review it.", ephemeral=True
         )
@@ -438,11 +731,13 @@ class ReportModal(discord.ui.Modal, title="Report Player"):
 class ReportPlayerSelect(discord.ui.Select):
     def __init__(self, p1: discord.Member, p2: discord.Member, match_id: str):
         self.match_id = match_id
-        options = [
-            discord.SelectOption(label=p1.display_name, value=str(p1.id)),
-            discord.SelectOption(label=p2.display_name, value=str(p2.id)),
-        ]
-        super().__init__(placeholder="Select player to report...", options=options)
+        super().__init__(
+            placeholder="🚩 Report a player...",
+            options=[
+                discord.SelectOption(label=p1.display_name[:100], value=str(p1.id)),
+                discord.SelectOption(label=p2.display_name[:100], value=str(p2.id)),
+            ],
+        )
 
     async def callback(self, interaction: discord.Interaction):
         reported_id = int(self.values[0])
@@ -457,10 +752,75 @@ class MatchPanelView(discord.ui.View):
     def __init__(self, match_id: str, p1: discord.Member, p2: discord.Member):
         super().__init__(timeout=None)
         self.match_id = match_id
-        self.p1 = p1
-        self.p2 = p2
-        self.add_item(MatchWinnerSelect(p1, p2, match_id))
+        self.add_item(Bo3ScoreSelect(p1, p2, match_id))
         self.add_item(ReportPlayerSelect(p1, p2, match_id))
+
+
+# ── Staff: /pvpreports ─────────────────────────────────────────────────────────
+
+class ReportActionModal(discord.ui.Modal, title="Report Action"):
+    report_id = discord.ui.TextInput(
+        label="Report ID",
+        placeholder="Enter the report ID number...",
+        max_length=10,
+    )
+    action_note = discord.ui.TextInput(
+        label="Note (optional)",
+        placeholder="Action taken or dismissal reason...",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=300,
+    )
+
+    def __init__(self, action: str):
+        super().__init__(title=f"{'Resolve' if action == 'resolve' else 'Dismiss'} Report")
+        self.action = action
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            rid = int(self.report_id.value.strip())
+        except ValueError:
+            return await interaction.response.send_message("❌ Invalid report ID.", ephemeral=True)
+
+        row = await d1_query("SELECT * FROM pvp_reports WHERE id = ? AND reviewed = 0", [rid])
+        if not row["results"]:
+            return await interaction.response.send_message(
+                f"❌ Report #{rid} not found or already reviewed.", ephemeral=True)
+
+        action_taken = self.action_note.value or ("Resolved" if self.action == "resolve" else "Dismissed")
+        await d1_query(
+            "UPDATE pvp_reports SET reviewed = 1, action_taken = ? WHERE id = ?",
+            [action_taken, rid]
+        )
+
+        if self.action == "resolve":
+            report = row["results"][0]
+            await d1_query(
+                "UPDATE users SET pvp_trust = MAX(0, pvp_trust - 1) WHERE discord_id = ?",
+                [report["reported_id"]]
+            )
+
+        await interaction.response.send_message(
+            f"✅ Report #{rid} {'resolved' if self.action == 'resolve' else 'dismissed'}.",
+            ephemeral=True,
+        )
+
+
+class PvpReportsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="Resolve Report", style=discord.ButtonStyle.success, emoji="✅")
+    async def resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_modal(ReportActionModal("resolve"))
+
+    @discord.ui.button(label="Dismiss Report", style=discord.ButtonStyle.secondary, emoji="🗑️")
+    async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.send_modal(ReportActionModal("dismiss"))
 
 
 # ── Channel creation ──────────────────────────────────────────────────────────
@@ -492,17 +852,25 @@ async def _create_match_channel(
         if role:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-    category = guild.get_channel(PVP_CATEGORY_ID) if PVP_CATEGORY_ID else None
-    chan_name = f"pvp-{p1.display_name[:10]}-vs-{p2.display_name[:10]}".lower().replace(" ", "-")
-    channel = await guild.create_text_channel(
-        chan_name, overwrites=overwrites, category=category,
-        topic=f"PvP match {match_id}"
-    )
+    category  = guild.get_channel(PVP_CATEGORY_ID) if PVP_CATEGORY_ID else None
+    chan_name  = f"pvp-{p1.display_name[:10]}-vs-{p2.display_name[:10]}".lower().replace(" ", "-")
+
+    try:
+        channel = await guild.create_text_channel(
+            chan_name, overwrites=overwrites, category=category,
+            topic=f"PvP match {match_id}"
+        )
+    except Exception as e:
+        print(f"[PvP] Failed to create match channel: {e}")
+        return
 
     pvp_active_matches[match_id] = {
-        "player1": p1_id, "player2": p2_id,
-        "match_type": match_type, "channel_id": channel.id,
-        "started_at": datetime.now(timezone.utc),
+        "player1":      p1_id,
+        "player2":      p2_id,
+        "match_type":   match_type,
+        "channel_id":   channel.id,
+        "started_at":   datetime.now(timezone.utc),
+        "warned":       False,
     }
 
     await d1_query(
@@ -511,17 +879,17 @@ async def _create_match_channel(
     )
 
     embed = discord.Embed(
-        title="⚔️ PvP Match",
+        title="⚔️ PvP Match — Best of 3",
         color=discord.Color.blurple(),
-        timestamp=datetime.now(timezone.utc)
+        timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="Type",    value=match_type.capitalize(), inline=True)
+    embed.add_field(name="Type",     value=match_type.capitalize(), inline=True)
     embed.add_field(name="Match ID", value=f"`{match_id}`",         inline=True)
-    embed.add_field(name="Player 1", value=p1.mention,             inline=True)
-    embed.add_field(name="Player 2", value=p2.mention,             inline=True)
+    embed.add_field(name="Player 1", value=p1.mention,              inline=True)
+    embed.add_field(name="Player 2", value=p2.mention,              inline=True)
     if ps_code:
         embed.add_field(name="PS Code", value=f"`{ps_code}`", inline=False)
-    embed.set_footer(text="Use the dropdown to declare the winner when the match ends.")
+    embed.set_footer(text="Use the score dropdown once the match ends.")
 
     await channel.send(
         content=f"{p1.mention} {p2.mention}",
@@ -530,20 +898,133 @@ async def _create_match_channel(
     )
 
 
-# ── Matchmaking task ──────────────────────────────────────────────────────────
+# ── Matchmaking helpers ───────────────────────────────────────────────────────
+
+def _deny_timeout_seconds(deny_count: int) -> int:
+    return min(300 * (2 ** deny_count), 1800)
+
+
+def _find_ranked_pairs(queue: dict[int, dict]) -> list[tuple[int, int]]:
+    now   = datetime.now(timezone.utc)
+    pairs = []
+    remaining = set(queue)
+
+    for uid1 in list(remaining):
+        if uid1 not in remaining:
+            continue
+        d1 = queue[uid1]
+        wait       = (now - d1["joined_at"]).total_seconds()
+        elo_window = min(50 + int(wait / 30) * 25, 300)
+
+        best = None
+        for uid2 in remaining:
+            if uid2 == uid1:
+                continue
+            d2 = queue[uid2]
+            if abs(d1["elo"] - d2["elo"]) > elo_window:
+                continue
+            same_tier = (d1["trust"] >= 7) == (d2["trust"] >= 7)
+            if best is None or same_tier:
+                best = uid2
+            if same_tier:
+                break
+
+        if best is not None:
+            pairs.append((uid1, best))
+            remaining.discard(uid1)
+            remaining.discard(best)
+
+    return pairs
+
+
+# ── PvP Cog ───────────────────────────────────────────────────────────────────
 
 class PvPCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._panel_msg_id: int | None = None
-        self._matchmaking_task = bot.loop.create_task(self._matchmaking_loop())
-        self._panel_task = bot.loop.create_task(self._ensure_panel())
-        self._rank_assign_task = bot.loop.create_task(self._assign_unranked_on_startup())
+        self._matchmaking_task  = bot.loop.create_task(self._matchmaking_loop())
+        self._panel_task        = bot.loop.create_task(self._ensure_panel())
+        self._rank_assign_task  = bot.loop.create_task(self._assign_unranked_on_startup())
+        self._weekly_reset.start()
+        self._elo_decay.start()
+        self._match_timeout_check.start()
 
     def cog_unload(self):
         self._matchmaking_task.cancel()
         self._panel_task.cancel()
         self._rank_assign_task.cancel()
+        self._weekly_reset.cancel()
+        self._elo_decay.cancel()
+        self._match_timeout_check.cancel()
+
+    # ── Background tasks ───────────────────────────────────────────────────
+
+    @tasks.loop(hours=168)  # weekly
+    async def _weekly_reset(self):
+        await self.bot.wait_until_ready()
+        await d1_query(
+            "UPDATE users SET pvp_deny_count = 0, pvp_timeout_until = NULL "
+            "WHERE pvp_deny_count > 0 OR pvp_timeout_until IS NOT NULL"
+        )
+        print("[PvP] Weekly deny count and queue timeouts reset")
+
+    @tasks.loop(hours=168)  # weekly ELO decay check
+    async def _elo_decay(self):
+        await self.bot.wait_until_ready()
+        cutoff = (datetime.now(timezone.utc) - timedelta(weeks=ELO_DECAY_INACTIVE_WKS)).isoformat()
+        await d1_query(
+            """UPDATE users
+               SET pvp_elo = MAX(1000, pvp_elo - ?)
+               WHERE pvp_placement_done = 1
+               AND pvp_elo > 1000
+               AND (updated_at IS NULL OR updated_at < ?)""",
+            [ELO_DECAY_AMOUNT, cutoff]
+        )
+        print("[PvP] ELO decay applied to inactive players")
+
+    @tasks.loop(minutes=1)
+    async def _match_timeout_check(self):
+        await self.bot.wait_until_ready()
+        now   = datetime.now(timezone.utc)
+        guild = self.bot.get_guild(GUILD_ID)
+
+        for match_id, match in list(pvp_active_matches.items()):
+            started  = match.get("started_at")
+            if not started:
+                continue
+            elapsed  = (now - started).total_seconds()
+            channel  = self.bot.get_channel(match.get("channel_id", 0))
+
+            if elapsed >= MATCH_TIMEOUT_DELETE_S:
+                note = await _apply_timeout_penalty(self.bot, match_id, guild)
+                if channel:
+                    try:
+                        await channel.send(
+                            f"⏰ **Match timed out — no winner declared.**{note}\n"
+                            "This channel will be deleted in 10 seconds."
+                        )
+                        await asyncio.sleep(10)
+                        await channel.delete(reason="PvP match timeout")
+                    except Exception:
+                        pass
+
+            elif elapsed >= MATCH_TIMEOUT_WARN_S and not match.get("warned"):
+                match["warned"] = True
+                if channel:
+                    p1 = guild.get_member(match["player1"]) if guild else None
+                    p2 = guild.get_member(match["player2"]) if guild else None
+                    try:
+                        await channel.send(
+                            f"⚠️ {p1.mention if p1 else ''} {p2.mention if p2 else ''} "
+                            "This match has been inactive for **30 minutes**. "
+                            "Please submit the score or the match will be auto-forfeited in **10 minutes** "
+                            f"and both players will lose **{TIMEOUT_ELO_PENALTY} ELO** (ranked)."
+                        )
+                    except Exception:
+                        pass
+
+    # ── Startup helpers ────────────────────────────────────────────────────
 
     async def _assign_unranked_on_startup(self):
         await self.bot.wait_until_ready()
@@ -563,7 +1044,7 @@ class PvPCog(commands.Cog):
             try:
                 await member.add_roles(unranked_role, reason="PvP: auto-assign Unranked")
                 count += 1
-                await asyncio.sleep(0.5)  # stay under rate limit
+                await asyncio.sleep(0.5)
             except Exception:
                 pass
         if count:
@@ -573,9 +1054,8 @@ class PvPCog(commands.Cog):
         await self.bot.wait_until_ready()
         channel = self.bot.get_channel(PVP_CHANNEL_ID)
         if not channel:
-            print(f"[PvP] Could not find PvP channel {PVP_CHANNEL_ID}")
+            print(f"[PvP] Channel {PVP_CHANNEL_ID} not found")
             return
-        # Check for a stored panel message
         try:
             row = await d1_query("SELECT value FROM bot_meta WHERE key = 'pvp_panel_msg_id'")
             if row["results"]:
@@ -583,9 +1063,9 @@ class PvPCog(commands.Cog):
                 try:
                     await channel.fetch_message(stored_id)
                     self._panel_msg_id = stored_id
-                    return  # Panel already exists
+                    return
                 except (discord.NotFound, discord.HTTPException):
-                    pass  # Message gone — resend
+                    pass
         except Exception:
             pass
 
@@ -602,21 +1082,21 @@ class PvPCog(commands.Cog):
 
     def _build_panel_embed(self, guild_id: int) -> discord.Embed:
         guild_queue = pvp_queue.get(guild_id, {})
-        ranked_n = sum(1 for d in guild_queue.values() if d["type"] == "ranked")
-        casual_n = sum(1 for d in guild_queue.values() if d["type"] == "casual")
-        total_n  = ranked_n + casual_n
+        ranked_n    = sum(1 for d in guild_queue.values() if d["type"] == "ranked")
+        casual_n    = sum(1 for d in guild_queue.values() if d["type"] == "casual")
+        total_n     = ranked_n + casual_n
 
-        if total_n:
-            queue_line = f"👥 **{total_n} player{'s' if total_n != 1 else ''} in queue** — {ranked_n} ranked · {casual_n} casual"
-        else:
-            queue_line = "👥 **Queue is empty** — be the first!"
+        queue_line = (
+            f"👥 **{total_n} player{'s' if total_n != 1 else ''} in queue** — "
+            f"{ranked_n} ranked · {casual_n} casual"
+        ) if total_n else "👥 **Queue is empty** — be the first!"
 
         return discord.Embed(
             title="⚔️ PvP Arena",
             description=(
                 "Challenge other players to ranked or casual matches!\n\n"
                 "**Ranked** — ELO-based matchmaking. Your rank updates after every match.\n"
-                "**Casual** — Quick match with no ELO impact.\n\n"
+                "**Casual** — No ELO impact. Complete 10 placement matches first to unlock ranked.\n\n"
                 f"{queue_line}\n\n"
                 "Click **Start PvP** below to enter the queue."
             ),
@@ -635,6 +1115,8 @@ class PvPCog(commands.Cog):
         except Exception:
             pass
 
+    # ── Matchmaking loop ───────────────────────────────────────────────────
+
     async def _matchmaking_loop(self):
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
@@ -646,14 +1128,12 @@ class PvPCog(commands.Cog):
 
     async def _run_matchmaking(self):
         panel_updated = False
-        for guild_id, guild_queue in list(pvp_queue.items()):
-            now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
 
-            # Separate queues by type
+        for guild_id, guild_queue in list(pvp_queue.items()):
             ranked = {uid: d for uid, d in guild_queue.items() if d["type"] == "ranked"}
             casual = {uid: d for uid, d in guild_queue.items() if d["type"] == "casual"}
 
-            # Ranked pairs
             for p1_id, p2_id in _find_ranked_pairs(ranked):
                 await self._invite_pair(guild_id, p1_id, p2_id, "ranked",
                                         ranked[p1_id]["elo"], ranked[p2_id]["elo"])
@@ -661,7 +1141,6 @@ class PvPCog(commands.Cog):
                 guild_queue.pop(p2_id, None)
                 panel_updated = True
 
-            # Casual pairs (simple FIFO)
             casual_ids = list(casual)
             while len(casual_ids) >= 2:
                 p1_id, p2_id = casual_ids.pop(0), casual_ids.pop(0)
@@ -674,17 +1153,57 @@ class PvPCog(commands.Cog):
             if panel_updated:
                 await self._update_panel_count(guild_id)
 
-            # Expire stale pending confirmations
-            for mid in list(pvp_pending):
-                if pvp_pending[mid]["expiry"] < now:
-                    # Notify both players and re-queue them
-                    pending = pvp_pending.pop(mid)
-                    for uid in (pending["player1"], pending["player2"]):
-                        try:
-                            u = await self.bot.fetch_user(uid)
-                            await u.send("⏰ Match confirmation timed out — you have been returned to the queue.")
-                        except Exception:
-                            pass
+        # Expire stale pending confirmations
+        for mid in list(pvp_pending):
+            pending = pvp_pending[mid]
+            if pending["expiry"] >= now:
+                continue
+
+            pending = pvp_pending.pop(mid)
+            match_type = pending.get("match_type", "casual")
+            guild_id   = pending.get("guild_id", GUILD_ID)
+
+            for uid in (pending["player1"], pending["player2"]):
+                accepted_key = "p1_accepted" if uid == pending["player1"] else "p2_accepted"
+                did_accept   = pending.get(accepted_key, False)
+
+                # No-response ranked penalty (neither player responded)
+                if match_type == "ranked" and not did_accept:
+                    row = await d1_query(
+                        "SELECT pvp_deny_count FROM users WHERE discord_id = ?", [str(uid)]
+                    )
+                    deny_count    = (row["results"][0]["pvp_deny_count"] or 0) if row["results"] else 0
+                    timeout_s     = _deny_timeout_seconds(deny_count)
+                    timeout_until = (now + timedelta(seconds=timeout_s)).isoformat()
+                    await d1_query(
+                        "UPDATE users SET pvp_deny_count = pvp_deny_count + 1, pvp_timeout_until = ? WHERE discord_id = ?",
+                        [timeout_until, str(uid)]
+                    )
+
+                try:
+                    u   = await self.bot.fetch_user(uid)
+                    msg = "⏰ Match confirmation timed out."
+                    if match_type == "ranked" and not did_accept:
+                        msg += " You received a queue timeout for not responding to a ranked invite."
+                    elif not did_accept:
+                        msg += " You have been returned to the queue."
+
+                    await u.send(msg)
+
+                    # Re-queue player if not penalised (casual, or they accepted but partner didn't)
+                    if match_type == "casual" or did_accept:
+                        o_row = await d1_query(
+                            "SELECT pvp_elo, pvp_trust FROM users WHERE discord_id = ?", [str(uid)]
+                        )
+                        if o_row["results"]:
+                            pvp_queue.setdefault(guild_id, {})[uid] = {
+                                "type":      match_type,
+                                "elo":       o_row["results"][0].get("pvp_elo")   or BASE_ELO,
+                                "trust":     o_row["results"][0].get("pvp_trust") or 10.0,
+                                "joined_at": now,
+                            }
+                except Exception:
+                    pass
 
     async def _invite_pair(
         self,
@@ -696,18 +1215,22 @@ class PvPCog(commands.Cog):
         p2_elo: int,
     ):
         match_id = str(uuid.uuid4())[:8]
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=60)
+        expiry   = datetime.now(timezone.utc) + timedelta(seconds=60)
         pvp_pending[match_id] = {
-            "player1": p1_id, "player2": p2_id,
+            "player1":    p1_id,
+            "player2":    p2_id,
+            "guild_id":   guild_id,
             "match_type": match_type,
-            "p1_accepted": False, "p2_accepted": False,
-            "expiry": expiry,
+            "p1_accepted": False,
+            "p2_accepted": False,
+            "expiry":      expiry,
         }
 
         now = datetime.now(timezone.utc).isoformat()
         await d1_query(
             """INSERT INTO pvp_matches
-               (match_id, player1_id, player2_id, match_type, p1_elo_before, p2_elo_before, started_at, created_at)
+               (match_id, player1_id, player2_id, match_type,
+                p1_elo_before, p2_elo_before, started_at, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [match_id, str(p1_id), str(p2_id), match_type, p1_elo, p2_elo, now, now]
         )
@@ -715,38 +1238,31 @@ class PvPCog(commands.Cog):
         guild = self.bot.get_guild(guild_id)
         for uid, opp_id, opp_elo in ((p1_id, p2_id, p2_elo), (p2_id, p1_id, p1_elo)):
             try:
-                user = await self.bot.fetch_user(uid)
-                opp  = guild.get_member(opp_id) if guild else None
+                user     = await self.bot.fetch_user(uid)
+                opp      = guild.get_member(opp_id) if guild else None
                 opp_name = opp.display_name if opp else f"<{opp_id}>"
 
                 embed = discord.Embed(
                     title="⚔️ Match Found!",
                     color=discord.Color.blurple(),
-                    timestamp=datetime.now(timezone.utc)
+                    timestamp=datetime.now(timezone.utc),
                 )
-                embed.add_field(name="Type",     value=match_type.capitalize(), inline=True)
-                embed.add_field(name="Opponent", value=opp_name,                inline=True)
-                embed.add_field(name="Their ELO", value=str(opp_elo),           inline=True)
-                embed.set_footer(text="You have 60 seconds to respond.")
+                embed.add_field(name="Type",      value=match_type.capitalize(), inline=True)
+                embed.add_field(name="Opponent",  value=opp_name,                inline=True)
+                embed.add_field(name="Their ELO", value=str(opp_elo),            inline=True)
+                embed.set_footer(text="You have 60 seconds to respond. Best of 3.")
 
                 await user.send(embed=embed, view=MatchFoundView(match_id, guild_id, uid))
             except Exception as e:
                 print(f"[PvP] Could not DM user {uid}: {e}")
 
-    # ── Queue entry / exit ────────────────────────────────────────────────
+    # ── Queue helpers ──────────────────────────────────────────────────────
 
-    async def _queue_add(
-        self,
-        guild_id: int,
-        user_id: int,
-        match_type: str,
-        elo: int,
-        trust: float,
-    ):
+    async def _queue_add(self, guild_id: int, user_id: int, match_type: str, elo: int, trust: float):
         pvp_queue.setdefault(guild_id, {})[user_id] = {
-            "type": match_type,
-            "elo": elo,
-            "trust": trust,
+            "type":      match_type,
+            "elo":       elo,
+            "trust":     trust,
             "joined_at": datetime.now(timezone.utc),
         }
         await self._update_panel_count(guild_id)
@@ -764,120 +1280,115 @@ class PvPCog(commands.Cog):
             for m in pvp_active_matches.values()
         )
 
-    # ── Panel views ───────────────────────────────────────────────────────
+    # ── Queue timeout check helper ────────────────────────────────────────
+
+    async def _check_queue_timeout(self, user_id: int) -> str | None:
+        """Returns an error message if the user is timed out, else None."""
+        row = await d1_query(
+            "SELECT pvp_timeout_until, pvp_banned FROM users WHERE discord_id = ?",
+            [str(user_id)]
+        )
+        if not row["results"]:
+            return None
+        data = row["results"][0]
+        if data.get("pvp_banned"):
+            return "❌ You are suspended from PvP."
+        timeout_str = data.get("pvp_timeout_until")
+        if timeout_str:
+            timeout_dt = datetime.fromisoformat(timeout_str)
+            if timeout_dt.tzinfo is None:
+                timeout_dt = timeout_dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) < timeout_dt:
+                rem = int((timeout_dt - datetime.now(timezone.utc)).total_seconds() // 60) + 1
+                return f"⏳ You are in a queue timeout for **{rem} more minute(s)**."
+        return None
+
+    # ── Commands ──────────────────────────────────────────────────────────
 
     @app_commands.command(
         name="pvpsendpanel",
-        description="Send the PvP panel to the current channel (Staff only)"
+        description="Send the PvP panel to this channel (Staff only)"
     )
     async def pvp_send_panel(self, interaction: discord.Interaction):
         if not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Staff only.", ephemeral=True)
-
-        embed = discord.Embed(
-            title="⚔️ PvP Arena",
-            description=(
-                "Challenge other players to ranked or casual matches!\n\n"
-                "**Ranked** — ELO-based matchmaking. Your rank updates after every match.\n"
-                "**Casual** — Quick match with no ELO impact.\n\n"
-                "Click **Start PvP** below to enter the queue."
-            ),
-            color=discord.Color.blurple(),
-        )
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        embed = self._build_panel_embed(interaction.guild_id)
         await interaction.response.send_message(embed=embed, view=PvPPanelView())
 
-    @app_commands.command(name="challenge", description="Send a casual PvP challenge to another player")
+    @app_commands.command(name="challenge", description="Challenge another player to a casual PvP match")
     @app_commands.describe(user="The player you want to challenge")
     async def challenge(self, interaction: discord.Interaction, user: discord.Member):
         if user.id == interaction.user.id:
-            return await interaction.response.send_message(
-                "❌ You can't challenge yourself.", ephemeral=True)
+            return await interaction.response.send_message("❌ You can't challenge yourself.", ephemeral=True)
         if user.bot:
-            return await interaction.response.send_message(
-                "❌ You can't challenge a bot.", ephemeral=True)
+            return await interaction.response.send_message("❌ You can't challenge a bot.", ephemeral=True)
         if not is_linked(interaction.user):
             return await interaction.response.send_message(
-                "❌ You need a linked Roblox account to use PvP.", ephemeral=True)
+                "❌ Link your Roblox account first.", ephemeral=True)
         if not is_linked(user):
             return await interaction.response.send_message(
-                f"❌ {user.mention} hasn't linked their Roblox account yet.", ephemeral=True)
+                f"❌ {user.mention} hasn't linked their account.", ephemeral=True)
 
         guild_id = interaction.guild_id
+
+        err = await self._check_queue_timeout(interaction.user.id)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+
         if self._in_match(interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are already in an active match.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are already in a match.", ephemeral=True)
         if self._in_match(user.id):
             return await interaction.response.send_message(
                 f"❌ {user.mention} is already in a match.", ephemeral=True)
         if self._in_queue(guild_id, interaction.user.id):
             return await interaction.response.send_message(
-                "❌ You are already in the queue. Use `/pvpleave` first.", ephemeral=True)
+                "❌ You are in the queue. Use `/pvpleave` first.", ephemeral=True)
 
-        # Queue timeout check
-        row = await d1_query(
-            "SELECT pvp_timeout_until FROM users WHERE discord_id = ?",
-            [str(interaction.user.id)]
-        )
-        if row["results"]:
-            timeout_str = row["results"][0].get("pvp_timeout_until")
-            if timeout_str:
-                timeout_dt = datetime.fromisoformat(timeout_str)
-                if timeout_dt.tzinfo is None:
-                    timeout_dt = timeout_dt.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) < timeout_dt:
-                    rem = int((timeout_dt - datetime.now(timezone.utc)).total_seconds() // 60)
-                    return await interaction.response.send_message(
-                        f"⏳ You are in a queue timeout for **{rem} more minute(s)**.",
-                        ephemeral=True)
-
-        # Fetch both players' ELO
         p_row = await d1_query(
-            "SELECT pvp_elo, pvp_trust FROM users WHERE discord_id = ?",
-            [str(interaction.user.id)]
+            "SELECT pvp_elo, pvp_trust FROM users WHERE discord_id = ?", [str(interaction.user.id)]
         )
         o_row = await d1_query(
-            "SELECT pvp_elo FROM users WHERE discord_id = ?",
-            [str(user.id)]
+            "SELECT pvp_elo FROM users WHERE discord_id = ?", [str(user.id)]
         )
-        p_elo = (p_row["results"][0].get("pvp_elo") or BASE_ELO) if p_row["results"] else BASE_ELO
-        o_elo = (o_row["results"][0].get("pvp_elo") or BASE_ELO) if o_row["results"] else BASE_ELO
-        p_trust = (p_row["results"][0].get("pvp_trust") or 10.0) if p_row["results"] else 10.0
+        p_elo   = (p_row["results"][0].get("pvp_elo")   or BASE_ELO) if p_row["results"] else BASE_ELO
+        o_elo   = (o_row["results"][0].get("pvp_elo")   or BASE_ELO) if o_row["results"] else BASE_ELO
 
         await interaction.response.send_message(
             f"✅ Challenge sent to {user.mention}! They have **60 seconds** to respond.",
-            ephemeral=True
+            ephemeral=True,
         )
 
-        # Create a direct casual match between the two players
         match_id = str(uuid.uuid4())[:8]
-        expiry = datetime.now(timezone.utc) + timedelta(seconds=60)
+        expiry   = datetime.now(timezone.utc) + timedelta(seconds=60)
         pvp_pending[match_id] = {
-            "player1": interaction.user.id,
-            "player2": user.id,
+            "player1":    interaction.user.id,
+            "player2":    user.id,
+            "guild_id":   guild_id,
             "match_type": "casual",
-            "p1_accepted": True,  # challenger already accepted
+            "p1_accepted": True,
             "p2_accepted": False,
-            "expiry": expiry,
+            "expiry":      expiry,
         }
 
         now = datetime.now(timezone.utc).isoformat()
         await d1_query(
             """INSERT INTO pvp_matches
-               (match_id, player1_id, player2_id, match_type, p1_elo_before, p2_elo_before, started_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            [match_id, str(interaction.user.id), str(user.id), "casual", p_elo, o_elo, now, now]
+               (match_id, player1_id, player2_id, match_type,
+                p1_elo_before, p2_elo_before, started_at, created_at)
+               VALUES (?, ?, ?, 'casual', ?, ?, ?, ?)""",
+            [match_id, str(interaction.user.id), str(user.id), p_elo, o_elo, now, now]
         )
 
         embed = discord.Embed(
             title="⚔️ PvP Challenge!",
             description=(
-                f"{interaction.user.mention} has challenged you to a **casual** match!\n\n"
+                f"{interaction.user.mention} challenged you to a **casual** match!\n\n"
                 f"**Challenger ELO:** {p_elo}\n"
-                f"**Your ELO:** {o_elo}"
+                f"**Your ELO:** {o_elo}\n\n"
+                "Best of 3."
             ),
             color=discord.Color.orange(),
-            timestamp=datetime.now(timezone.utc)
+            timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(text="You have 60 seconds to respond.")
         try:
@@ -885,21 +1396,215 @@ class PvPCog(commands.Cog):
         except discord.Forbidden:
             pvp_pending.pop(match_id, None)
             await interaction.followup.send(
-                f"❌ Could not DM {user.mention} — they may have DMs disabled.",
-                ephemeral=True
+                f"❌ Could not DM {user.mention} — they may have DMs disabled.", ephemeral=True
             )
 
     @app_commands.command(name="pvpleave", description="Leave the PvP queue")
     async def pvp_leave(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
         if not self._in_queue(guild_id, interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are not in the queue.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are not in the queue.", ephemeral=True)
         await self._queue_remove(guild_id, interaction.user.id)
         await interaction.response.send_message("✅ Left the queue.", ephemeral=True)
 
+    @app_commands.command(name="pvpstats", description="View PvP stats for yourself or another player")
+    @app_commands.describe(user="Player to check (defaults to you)")
+    async def pvp_stats(self, interaction: discord.Interaction, user: discord.Member | None = None):
+        target = user or interaction.user
+        await interaction.response.defer()
 
-# ── Panel view (persistent) ───────────────────────────────────────────────────
+        row = await d1_query(
+            "SELECT pvp_elo, pvp_wins, pvp_losses, pvp_rank, pvp_placement_done, pvp_placement_left "
+            "FROM users WHERE discord_id = ?",
+            [str(target.id)]
+        )
+        if not row["results"]:
+            return await interaction.followup.send(
+                f"❌ {target.mention} hasn't linked their account.", ephemeral=True
+            )
+
+        data   = row["results"][0]
+        elo    = data.get("pvp_elo")    or BASE_ELO
+        wins   = data.get("pvp_wins")   or 0
+        losses = data.get("pvp_losses") or 0
+        rank   = data.get("pvp_rank")   or "Unranked"
+        pdone  = bool(data.get("pvp_placement_done"))
+        pleft  = data.get("pvp_placement_left") or 0
+        total  = wins + losses
+        winrate = f"{wins/total*100:.1f}%" if total else "—"
+
+        # Last 5 matches
+        matches_row = await d1_query(
+            """SELECT winner_id, player1_id, player2_id, score, p1_elo_after, p2_elo_after, ended_at
+               FROM pvp_matches
+               WHERE (player1_id = ? OR player2_id = ?) AND ended_at IS NOT NULL
+               ORDER BY ended_at DESC LIMIT 5""",
+            [str(target.id), str(target.id)]
+        )
+
+        embed = discord.Embed(
+            title=f"⚔️ PvP Stats — {target.display_name}",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Rank",    value=rank,         inline=True)
+        embed.add_field(name="ELO",     value=str(elo),     inline=True)
+        embed.add_field(name="W / L",   value=f"{wins} / {losses}", inline=True)
+        embed.add_field(name="Win Rate", value=winrate,     inline=True)
+        embed.add_field(name="Matches", value=str(total),  inline=True)
+        if not pdone:
+            embed.add_field(name="Placement", value=f"{pleft} left", inline=True)
+
+        history = []
+        for m in matches_row.get("results", []):
+            won    = str(target.id) == str(m.get("winner_id"))
+            opp_id = m["player2_id"] if str(target.id) == m["player1_id"] else m["player1_id"]
+            score  = m.get("score") or "—"
+            icon   = "🟢" if won else "🔴"
+            history.append(f"{icon} vs <@{opp_id}> `{score}`")
+
+        if history:
+            embed.add_field(name="Last 5 Matches", value="\n".join(history), inline=False)
+
+        embed.set_thumbnail(url=target.display_avatar.url)
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="pvpleaderboard", description="Top 10 players by ELO")
+    async def pvp_leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        row = await d1_query(
+            """SELECT discord_id, pvp_elo, pvp_wins, pvp_losses, pvp_rank
+               FROM users
+               WHERE pvp_placement_done = 1
+               ORDER BY pvp_elo DESC LIMIT 10"""
+        )
+
+        embed = discord.Embed(
+            title="🏆 PvP Leaderboard — Top 10",
+            color=discord.Color.gold(),
+        )
+
+        lines = []
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(row.get("results", [])):
+            medal  = medals[i] if i < 3 else f"**#{i+1}**"
+            uid    = r["discord_id"]
+            elo    = r.get("pvp_elo")    or BASE_ELO
+            rank   = r.get("pvp_rank")   or "Unranked"
+            wins   = r.get("pvp_wins")   or 0
+            losses = r.get("pvp_losses") or 0
+            lines.append(f"{medal} <@{uid}> — **{elo} ELO** · {rank} · {wins}W/{losses}L")
+
+        embed.description = "\n".join(lines) if lines else "No ranked players yet."
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="pvpreports", description="View unreviewed PvP reports (Staff only)")
+    async def pvp_reports(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+
+        row = await d1_query(
+            """SELECT id, reporter_id, reported_id, match_id, reason, created_at
+               FROM pvp_reports WHERE reviewed = 0 ORDER BY created_at DESC LIMIT 10"""
+        )
+        results = row.get("results", [])
+
+        embed = discord.Embed(
+            title="🚩 Unreviewed PvP Reports",
+            color=discord.Color.red(),
+        )
+        if not results:
+            embed.description = "✅ No unreviewed reports."
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        for r in results:
+            ts = r.get("created_at", "")[:10]
+            embed.add_field(
+                name=f"Report #{r['id']} — {ts}",
+                value=(
+                    f"**Reporter:** <@{r['reporter_id']}>\n"
+                    f"**Reported:** <@{r['reported_id']}>\n"
+                    f"**Match:** `{r.get('match_id') or 'N/A'}`\n"
+                    f"**Reason:** {r['reason'][:100]}"
+                ),
+                inline=False,
+            )
+
+        embed.set_footer(text="Use Resolve/Dismiss buttons and enter the Report ID.")
+        await interaction.followup.send(embed=embed, view=PvpReportsView(), ephemeral=True)
+
+    @app_commands.command(name="pvpsetelo", description="Manually set a player's ELO (Staff only)")
+    @app_commands.describe(user="Target player", elo="New ELO value", reason="Reason for adjustment")
+    async def pvp_set_elo(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        elo: app_commands.Range[int, 0, 9999],
+        reason: str = "Manual adjustment",
+    ):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+
+        now = datetime.now(timezone.utc).isoformat()
+        await d1_query(
+            "UPDATE users SET pvp_elo = ?, updated_at = ? WHERE discord_id = ?",
+            [elo, now, str(user.id)]
+        )
+        new_rank = await compute_pvp_rank(elo)
+        await d1_query(
+            "UPDATE users SET pvp_rank = ? WHERE discord_id = ?", [new_rank, str(user.id)]
+        )
+        await update_pvp_rank_role(user, new_rank)
+
+        embed = discord.Embed(
+            title="✏️ ELO Updated",
+            description=(
+                f"{user.mention}'s ELO set to **{elo}** (rank: **{new_rank}**).\n"
+                f"Reason: {reason}"
+            ),
+            color=discord.Color.blue(),
+        )
+        await interaction.response.send_message(embed=embed)
+
+        # Log to audit channel (best-effort)
+        try:
+            row = await d1_query("SELECT value FROM bot_meta WHERE key = 'log_channel_id'")
+            if row["results"]:
+                log_ch = interaction.guild.get_channel(int(row["results"][0]["value"]))
+                if log_ch:
+                    await log_ch.send(
+                        f"[PvP ELO] {interaction.user.mention} set {user.mention}'s ELO → **{elo}** | {reason}"
+                    )
+        except Exception:
+            pass
+
+    @app_commands.command(name="pvpsuspend", description="Suspend a player from PvP (Staff only)")
+    @app_commands.describe(user="Player to suspend")
+    async def pvp_suspend(self, interaction: discord.Interaction, user: discord.Member):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await d1_query(
+            "UPDATE users SET pvp_banned = 1 WHERE discord_id = ?", [str(user.id)]
+        )
+        await interaction.response.send_message(
+            f"🚫 {user.mention} has been suspended from PvP.", ephemeral=True
+        )
+
+    @app_commands.command(name="pvpunsuspend", description="Lift a player's PvP suspension (Staff only)")
+    @app_commands.describe(user="Player to unsuspend")
+    async def pvp_unsuspend(self, interaction: discord.Interaction, user: discord.Member):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await d1_query(
+            "UPDATE users SET pvp_banned = 0 WHERE discord_id = ?", [str(user.id)]
+        )
+        await interaction.response.send_message(
+            f"✅ {user.mention}'s PvP suspension lifted.", ephemeral=True
+        )
+
+
+# ── Panel views (persistent) ───────────────────────────────────────────────────
 
 class PvPPanelView(discord.ui.View):
     def __init__(self):
@@ -914,39 +1619,27 @@ class PvPPanelView(discord.ui.View):
 
         guild_id = interaction.guild_id
 
+        if not is_linked(interaction.user):
+            return await interaction.response.send_message(
+                "❌ Link your Roblox account to play PvP.", ephemeral=True)
+
         if cog._in_match(interaction.user.id):
             return await interaction.response.send_message(
                 "❌ You are already in an active match.", ephemeral=True)
         if cog._in_queue(guild_id, interaction.user.id):
             return await interaction.response.send_message(
                 "❌ You are already in the queue. Use `/pvpleave` to exit.", ephemeral=True)
-        if not is_linked(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You must have a linked Roblox account to play PvP.", ephemeral=True)
 
-        # Check queue timeout
-        row = await d1_query(
-            "SELECT pvp_timeout_until FROM users WHERE discord_id = ?",
-            [str(interaction.user.id)]
-        )
-        if row["results"]:
-            timeout_str = row["results"][0].get("pvp_timeout_until")
-            if timeout_str:
-                timeout_dt = datetime.fromisoformat(timeout_str)
-                if timeout_dt.tzinfo is None:
-                    timeout_dt = timeout_dt.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) < timeout_dt:
-                    rem = int((timeout_dt - datetime.now(timezone.utc)).total_seconds() // 60)
-                    return await interaction.response.send_message(
-                        f"⏳ You are in a queue timeout for **{rem} more minute(s)** "
-                        "due to a recent ranked denial.", ephemeral=True)
+        err = await cog._check_queue_timeout(interaction.user.id)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
 
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="⚔️ Select Match Type",
                 description=(
-                    "**Ranked** — ELO-based. You need 10 placement matches first.\n"
-                    "**Casual** — No ELO impact. Matched with any available player."
+                    "**Ranked** — ELO-based. Requires 10 placement matches.\n"
+                    "**Casual** — No ELO impact. Placement matches count here."
                 ),
                 color=discord.Color.blurple(),
             ),
@@ -974,27 +1667,30 @@ class MatchTypeView(discord.ui.View):
             return await interaction.response.send_message("❌ PvP offline.", ephemeral=True)
 
         row = await d1_query(
-            "SELECT pvp_elo, pvp_trust, pvp_placement_done FROM users WHERE discord_id = ?",
+            "SELECT pvp_elo, pvp_trust, pvp_placement_done, pvp_banned FROM users WHERE discord_id = ?",
             [str(interaction.user.id)]
         )
         if not row["results"]:
-            return await interaction.response.send_message(
-                "❌ You haven't verified yet.", ephemeral=True)
+            return await interaction.response.send_message("❌ You haven't verified yet.", ephemeral=True)
 
-        data   = row["results"][0]
-        elo    = data.get("pvp_elo")   or BASE_ELO
-        trust  = data.get("pvp_trust") or 10.0
-        placed = data.get("pvp_placement_done") or 0
+        data    = row["results"][0]
+        elo     = data.get("pvp_elo")            or BASE_ELO
+        trust   = data.get("pvp_trust")          or 10.0
+        placed  = bool(data.get("pvp_placement_done"))
+        banned  = bool(data.get("pvp_banned"))
+
+        if banned:
+            return await interaction.response.send_message(
+                "❌ You are suspended from PvP.", ephemeral=True)
 
         if match_type == "ranked" and not placed:
             return await interaction.response.send_message(
-                f"❌ You need {PLACEMENT_MATCHES} placement matches before joining ranked. "
-                "Play **Casual** first!", ephemeral=True)
+                f"❌ Complete {PLACEMENT_MATCHES} casual placement matches first!", ephemeral=True)
 
         await cog._queue_add(self.guild_id, interaction.user.id, match_type, elo, trust)
 
         queue_size = len(pvp_queue.get(self.guild_id, {}))
-        join_ts = int(datetime.now(timezone.utc).timestamp())
+        join_ts    = int(datetime.now(timezone.utc).timestamp())
         await interaction.response.send_message(
             embed=discord.Embed(
                 title=f"✅ Entered {match_type.capitalize()} Queue",
@@ -1014,5 +1710,5 @@ class MatchTypeView(discord.ui.View):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PvPCog(bot))
-    bot.add_view(PvPPanelView())  # register as persistent
+    bot.add_view(PvPPanelView())
     print("✅ PvP cog loaded")
