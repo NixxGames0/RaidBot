@@ -39,7 +39,7 @@ except ImportError:
 
 # ── Channel IDs ──────────────────────────────────────────────────────────────
 VERIFICATION_CHANNEL_ID = 1535735916893831260
-MANUAL_VERIFY_CHANNEL_ID = 1535893394533126154
+MANUAL_VERIFY_CHANNEL_ID = 1536697345251737730
 
 # ── Roles to ping for manual verification ──────────────────────────────────
 PING_ROLES = [
