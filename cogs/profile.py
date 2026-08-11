@@ -165,20 +165,40 @@ def _apply_alpha(img: Image.Image, opacity: float) -> Image.Image:
 
 def _gradient_text(card: Image.Image, xy: tuple, text: str, font,
                    gradient_src: Image.Image) -> None:
-    """Fill text with pixels stretched from gradient_src (matches icon colors exactly)."""
+    """Fill text with a horizontal gradient derived from the icon's color distribution."""
     bbox = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(xy, text, font=font)
     x, y, x2, y2 = bbox
     w, h = max(1, x2 - x), max(1, y2 - y)
 
+    # Squash icon to a 1-row strip — LANCZOS averages all vertical pixels,
+    # leaving just the horizontal color distribution as a smooth gradient.
+    strip = gradient_src.convert("RGB").resize((w, 1), Image.LANCZOS)
+    grad  = strip.resize((w, h), Image.NEAREST).convert("RGBA")
+
     mask = Image.new("L", card.size, 0)
     ImageDraw.Draw(mask).text(xy, text, font=font, fill=255)
 
-    grad = gradient_src.convert("RGB").resize((w, h), Image.LANCZOS).convert("RGBA")
-
     layer = Image.new("RGBA", card.size, (0, 0, 0, 0))
     layer.paste(grad, (x, y))
-
     card.paste(layer, mask=mask)
+
+
+def _gradient_rect(c1: tuple, c2: tuple, w: int, h: int, radius: int = 0) -> Image.Image:
+    """Horizontal gradient rectangle, optional rounded corners."""
+    row = Image.new("RGB", (max(1, w), 1))
+    px  = row.load()
+    for i in range(w):
+        t = i / max(1, w - 1)
+        px[i, 0] = tuple(int(c1[j] + (c2[j] - c1[j]) * t) for j in range(3))
+    img = row.resize((w, h), Image.NEAREST).convert("RGBA")
+    if radius:
+        mask = Image.new("L", (w, h), 0)
+        try:
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=radius, fill=255)
+        except AttributeError:
+            ImageDraw.Draw(mask).rectangle([0, 0, w - 1, h - 1], fill=255)
+        img.putalpha(mask)
+    return img
 
 
 def _draw_placement_ring(
@@ -309,7 +329,9 @@ async def _build_card(
 
     _rrect(d, [BAR_X, BAR_Y, BAR_X + BAR_W, BAR_Y + BAR_H], BAR_H // 2, BAR_BG)
     fill_w = max(BAR_H, int(BAR_W * pct / 100))
-    _rrect(d, [BAR_X, BAR_Y, BAR_X + fill_w, BAR_Y + BAR_H], BAR_H // 2, accent)
+    bar_c2 = tuple(min(255, int(c * 1.45)) for c in accent)   # brighten for right end
+    bar_grad = _gradient_rect(accent, bar_c2, fill_w, BAR_H, radius=BAR_H // 2)
+    card.paste(bar_grad, (BAR_X, BAR_Y), bar_grad)
     d.text((BAR_X + BAR_W + 10, BAR_Y), f"{pct}% to Level {level + 1}",
            font=_font(SZ_LABEL, bold=True), fill=MUTED)
 
