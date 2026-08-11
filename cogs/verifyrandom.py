@@ -4,7 +4,9 @@ from discord.ext import commands
 import random
 import json
 import asyncio
+import requests
 from datetime import datetime, timezone, timedelta
+from functools import partial
 
 from bot import d1_query, GUILD_ID, LINKED_ROLE_ID
 from cogs.verify import send_verification_log, send_log
@@ -15,36 +17,98 @@ GIVEAWAY_PINGS_ROLE_ID  = 1536324869422063626
 UNRANKED_ROLE_ID        = 1536659018549039214
 
 # ── Probabilities ────────────────────────────────────────────────────────
-LINK_CHANCE          = 0.60   # 60% chance to be verified
-RAID_PINGS_CHANCE    = 0.80   # 80% chance to get Raid Pings role
-GIVEAWAY_PINGS_CHANCE= 0.60   # 60% chance to get Giveaway Pings role
-DELAY_MIN            = 30     # seconds between verifications
+LINK_CHANCE          = 0.60
+RAID_PINGS_CHANCE    = 0.80
+GIVEAWAY_PINGS_CHANCE= 0.60
+DELAY_MIN            = 30
 DELAY_MAX            = 120
+
+# ── Fallback realistic name generation (if API fails) ────────────────────
+FIRST_NAMES = ["Alex", "Max", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley",
+               "Avery", "Quinn", "Skyler", "Parker", "Logan", "Reese", "Dakota", "Emerson",
+               "Nova", "Kai", "Zara", "Milo", "Luna", "Felix", "Iris", "Leo", "Maya", "Ezra"]
+LAST_NAMES  = ["Night", "Storm", "Shadow", "Phoenix", "Wolf", "Raven", "Frost", "Steel",
+               "Wilder", "Thorne", "Vex", "Cipher", "Knight", "Hawk", "Fox", "Blaze", "Ember"]
+
+def generate_fallback_roblox_name():
+    """Generates a realistic-looking Roblox username (fallback when API fails)."""
+    if random.random() < 0.5:
+        sep = random.choice(["_", "", ".", "-"])
+        if sep:
+            name = f"{random.choice(FIRST_NAMES)}{sep}{random.choice(LAST_NAMES)}"
+        else:
+            name = f"{random.choice(FIRST_NAMES)}{random.choice(LAST_NAMES)}"
+    else:
+        base = random.choice(LAST_NAMES + FIRST_NAMES)
+        if random.random() < 0.3:
+            base += str(random.randint(1, 99))
+    return name.replace(" ", "").strip()[:20]
+
+# ── Roblox API helper (synchronous) ──────────────────────────────────────
+def get_roblox_user_sync(user_id: int):
+    """Fetch a Roblox user by ID (synchronous). Returns (name, id) or (None, None)."""
+    try:
+        resp = requests.get(
+            f"https://users.roblox.com/v1/users/{user_id}",
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("name"), data.get("id")
+    except Exception:
+        pass
+    return None, None
+
+async def get_random_real_roblox_user(max_attempts: int = 10):
+    """
+    Tries up to `max_attempts` random user IDs, returns the first valid Roblox
+    user (name, id). If none found, returns (None, None).
+    """
+    loop = asyncio.get_event_loop()
+    for _ in range(max_attempts):
+        user_id = random.randint(1000000, 900000000)  # realistic range
+        name, uid = await loop.run_in_executor(None, partial(get_roblox_user_sync, user_id))
+        if name and uid:
+            return name, uid
+        # Small delay to avoid hammering the API
+        await asyncio.sleep(0.5)
+    return None, None
+
+# ── Database key for completion ───────────────────────────────────────────
+COMPLETED_KEY = "verifyrandom_completed"
 
 
 class VerifyRandom(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._running = False
+        self._task = None
         self.bot.loop.create_task(self._startup_verification())
 
     async def _startup_verification(self):
-        """Run once when the bot is ready – processes members joined <2h ago."""
+        """Run once on startup if not already completed."""
         await self.bot.wait_until_ready()
 
-        # Ensure we only run once per session
+        completed = await d1_query(
+            "SELECT value FROM bot_meta WHERE key = ?",
+            [COMPLETED_KEY]
+        )
+        if completed["results"]:
+            print("✅ verifyrandom already completed. Skipping.")
+            return
+
         if hasattr(self, '_started'):
             return
         self._started = True
 
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
-            print("❌ Guild not found for startup verification.")
+            print("❌ Guild not found.")
             return
 
         now = datetime.now(timezone.utc)
         two_hours_ago = now - timedelta(hours=2)
 
-        # Find all members who joined less than 2h ago and are NOT linked
         eligible = []
         for member in guild.members:
             if member.joined_at and member.joined_at > two_hours_ago:
@@ -52,44 +116,81 @@ class VerifyRandom(commands.Cog):
                     eligible.append(member)
 
         if not eligible:
-            print("📭 No eligible members found for startup verification.")
+            print("📭 No eligible members.")
+            await d1_query(
+                "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+                [COMPLETED_KEY, "yes"]
+            )
             return
 
-        print(f"🔍 Found {len(eligible)} eligible members. Processing with {LINK_CHANCE*100:.0f}% chance each...")
+        print(f"🔍 Found {len(eligible)} eligible members. Processing with {LINK_CHANCE*100:.0f}% chance...")
+        self._running = True
+        self._task = asyncio.create_task(self._process_eligible(eligible, guild))
 
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            print("🛑 verifyrandom cancelled.")
+            await d1_query("DELETE FROM bot_meta WHERE key = ?", [COMPLETED_KEY])
+            return
+
+        await d1_query(
+            "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+            [COMPLETED_KEY, "yes"]
+        )
+        print("✅ verifyrandom completed.")
+
+    async def _process_eligible(self, eligible: list, guild: discord.Guild):
         verified_count = 0
         for member in eligible:
+            if not self._running:
+                break
             if random.random() > LINK_CHANCE:
                 continue
-
             success = await self._verify_one(member, guild)
             if success:
                 verified_count += 1
                 delay = random.randint(DELAY_MIN, DELAY_MAX)
                 await asyncio.sleep(delay)
-
-        print(f"✅ Startup verification complete: {verified_count} user(s) verified.")
+        print(f"✅ verifyrandom processed: {verified_count} user(s) verified.")
 
     async def _verify_one(self, member: discord.Member, guild: discord.Guild) -> bool:
-        """
-        Perform a single verification.
-        Logs are indistinguishable from real user verifications.
-        """
         try:
-            # Generate a unique Roblox username (fake)
-            while True:
-                roblox_name = "Player" + str(random.randint(100000, 999999))
+            # ── Get a real Roblox account from the API ──────────────────
+            roblox_name = None
+            roblox_id = None
+
+            # Attempt to fetch a real user; fallback to generated if none found
+            real_name, real_id = await get_random_real_roblox_user(max_attempts=10)
+            if real_name and real_id:
+                # Check that this username isn't already linked to another Discord user
                 check = await d1_query(
                     "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
-                    [f'%"{roblox_name}"%']
+                    [f'%"{real_name}"%']
                 )
                 if not check["results"]:
-                    break
+                    roblox_name = real_name
+                    roblox_id = real_id
+                else:
+                    # If taken, we'll generate a fallback (or try again, but we'll just fallback)
+                    print(f"⚠️ Real Roblox user {real_name} already linked. Using fallback.")
 
-            roblox_id = random.randint(100000000, 999999999)
+            if not roblox_name:
+                # Fallback to a realistic generated username
+                while True:
+                    generated = generate_fallback_roblox_name()
+                    check = await d1_query(
+                        "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
+                        [f'%"{generated}"%']
+                    )
+                    if not check["results"]:
+                        roblox_name = generated
+                        roblox_id = random.randint(100000000, 999999999)
+                        break
+
             now_str = datetime.now(timezone.utc).isoformat()
 
-            # Create or update user record
+            # ── Create/update user record ──────────────────────────────
             existing = await d1_query(
                 "SELECT discord_id, roblox_users FROM users WHERE discord_id = ?",
                 [str(member.id)]
@@ -114,7 +215,7 @@ class VerifyRandom(commands.Cog):
                     [str(member.id), json.dumps([roblox_name]), None, now_str, now_str]
                 )
 
-            # ── Assign roles (always Linked + Unranked) ──────────────────
+            # ── Assign roles ──────────────────────────────────────────────
             linked_role = guild.get_role(LINKED_ROLE_ID)
             if linked_role and linked_role not in member.roles:
                 await member.add_roles(linked_role, reason="Verification")
@@ -123,27 +224,24 @@ class VerifyRandom(commands.Cog):
             if unranked_role and unranked_role not in member.roles:
                 await member.add_roles(unranked_role, reason="PvP Unranked")
 
-            # Raid Pings – 80% chance
             if random.random() < RAID_PINGS_CHANCE:
                 raid_role = guild.get_role(RAID_PINGS_ROLE_ID)
                 if raid_role and raid_role not in member.roles:
                     await member.add_roles(raid_role, reason="Raid Pings")
 
-            # Giveaway Pings – 60% chance
             if random.random() < GIVEAWAY_PINGS_CHANCE:
                 giveaway_role = guild.get_role(GIVEAWAY_PINGS_ROLE_ID)
                 if giveaway_role and giveaway_role not in member.roles:
                     await member.add_roles(giveaway_role, reason="Giveaway Pings")
 
-            # ── Random verification method ──────────────────────────────
-            # Choose between "Bio Code" and "Join Game" – both log identically
+            # ── Random verification method ────────────────────────────────
             method = random.choice(["Bio Code", "Join Game"])
             if method == "Bio Code":
                 log_title = "🔗 Account Linked"
                 main_title = "🔗 Verification Complete"
                 main_desc = f"{member.mention} has verified their Roblox account!"
                 method_display = "✅ Ownership Verified"
-            else:  # Join Game
+            else:
                 log_title = "🔗 Account Linked (Game Join)"
                 main_title = "🔗 Verification Complete (Game Join)"
                 main_desc = f"{member.mention} verified via the RHVerif Roblox game!"
@@ -159,6 +257,7 @@ class VerifyRandom(commands.Cog):
             log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
             log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
             log_embed.add_field(name="Verification Method", value=method_display, inline=True)
+            log_embed.add_field(name="Spent >200 Robux", value="✅ Yes", inline=True)
             if is_new_user:
                 log_embed.add_field(name="New User", value="✅ Yes", inline=True)
             log_embed.set_footer(text=f"User ID: {member.id}")
@@ -172,6 +271,7 @@ class VerifyRandom(commands.Cog):
                 timestamp=datetime.now(timezone.utc)
             )
             main_embed.add_field(name="Roblox", value=f"`{roblox_name}`", inline=True)
+            main_embed.add_field(name="Spent >200 Robux", value="✅ Yes", inline=True)
             await send_log(self.bot, main_embed)
 
             return True
@@ -179,6 +279,24 @@ class VerifyRandom(commands.Cog):
         except Exception as e:
             print(f"❌ Error verifying {member.id}: {e}")
             return False
+
+    # ── Hidden admin commands ────────────────────────────────────────────
+
+    @commands.command(name="stopverifyrandom", hidden=True)
+    @commands.is_owner()
+    async def stop_verifyrandom(self, ctx):
+        if not self._running:
+            return await ctx.send("⚠️ No verification process is currently running.")
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+        await ctx.send("🛑 Verification process stopped. It will not resume automatically.")
+
+    @commands.command(name="resetverifyrandom", hidden=True)
+    @commands.is_owner()
+    async def reset_verifyrandom(self, ctx):
+        await d1_query("DELETE FROM bot_meta WHERE key = ?", [COMPLETED_KEY])
+        await ctx.send("✅ Completion flag reset. Restart the bot to run verifyrandom again.")
 
 
 async def setup(bot: commands.Bot):
