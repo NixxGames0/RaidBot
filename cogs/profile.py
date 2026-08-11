@@ -208,7 +208,7 @@ async def _build_card(
     if rank_icon:
         WM = H * 2
         wm = rank_icon.resize((WM, WM), Image.LANCZOS)
-        wm = _apply_alpha(wm, 0.50)
+        wm = _apply_alpha(wm, 0.25)
         card.paste(wm, (W - WM // 2, (H - WM) // 2), wm)
 
     # ── Left accent strip ──────────────────────────────────────────────────
@@ -311,7 +311,7 @@ async def _build_card(
     ring_offset = 0
     ring_cx = ring_cy = 0
     matches_done = 0
-    if not pvp_placement_done:
+    if pvp_rank == "Unranked" and not pvp_placement_done:
         matches_done = max(0, PLACEMENT_MATCHES - (pvp_placement_left or PLACEMENT_MATCHES))
         rank_w, rank_h = _tsize(d, pvp_rank, fn_pvp)
         ring_cx = CX + rank_w + 16 + 20
@@ -329,7 +329,7 @@ async def _build_card(
         d.text((sx, 201), label, font=fn_label, fill=MUTED)
         d.text((sx, 220), value, font=fn_pvp,   fill=color)
 
-    if not pvp_placement_done:
+    if pvp_rank == "Unranked" and not pvp_placement_done:
         _draw_placement_ring(d, ring_cx, ring_cy, matches_done, accent=accent)
 
     # ── Render ─────────────────────────────────────────────────────────────
