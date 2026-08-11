@@ -232,9 +232,19 @@ class MatchFoundView(discord.ui.View):
             pending["p2_accepted"] = True
 
         if pending["p1_accepted"] and pending["p2_accepted"]:
+            # Pop atomically — whichever accept() wins the race creates the channel
+            pending_data = pvp_pending.pop(self.match_id, None)
             await interaction.response.send_message(
                 "✅ Both players accepted! Creating your match channel...", ephemeral=True)
-            # TODO: get_or_fetch the guild and members, then call _create_match_channel
+            if pending_data:
+                asyncio.ensure_future(_create_match_channel(
+                    interaction.client,
+                    self.guild_id,
+                    self.match_id,
+                    pending_data["player1"],
+                    pending_data["player2"],
+                    pending_data.get("match_type", "casual"),
+                ))
         else:
             await interaction.response.send_message(
                 "✅ Accepted! Waiting for the other player...", ephemeral=True)
