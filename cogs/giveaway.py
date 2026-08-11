@@ -17,6 +17,7 @@ from bot import (
     FOUNDER_ROLE_ID,
     is_staff,
     is_head_staff_or_founder,
+    is_founder,
     send_log
 )
 
@@ -593,7 +594,7 @@ class GiveawayBuilderView(discord.ui.View):
         ))
         async def on_submit(interaction: discord.Interaction):
             try:
-                val = int(interaction.children[0].value)
+                val = int(modal.children[0].value)
                 if val < 1 or val > 10:
                     raise ValueError
                 self.data["winners"] = val
@@ -1391,7 +1392,7 @@ class Giveaway(commands.Cog):
 
         await self.update_giveaway_embed(giveaway_id, winners=winners)
 
-        channel = interaction.guild.get_channel(int(row["channel_id"])) if row.get("channel_id") else None
+        channel = interaction.guild.get_channel(int(data["channel_id"])) if data.get("channel_id") else None
         if channel:
             embed = discord.Embed(
                 title="🔄 Giveaway Rerolled",

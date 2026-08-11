@@ -421,41 +421,9 @@ class MyBot(commands.Bot):
                 # Process verification securely in the background
                 async def process_verify():
                     try:
-                        from cogs.verify import pending_verifications, finalize_verification
-
-                        discord_user_id = None
-                        # Find the Discord user waiting for this Roblox ID
-                        for uid, data in pending_verifications.items():
-                            if data.get('roblox_id') == roblox_id:
-                                discord_user_id = uid
-                                break
-
-                        if not discord_user_id:
-                            print(f"⚠️ Roblox user {roblox_name} attempted verify, but no pending Discord request found.")
-                            return
-
-                        # Remove from pending
-                        del pending_verifications[discord_user_id]
-
-                        # Get the Discord Member
-                        guild = self.get_guild(self.guild_id)
-                        member = guild.get_member(int(discord_user_id))
-
-                        if not member:
-                            print(f"❌ Could not find Discord member {discord_user_id} in the guild.")
-                            return
-
-                        # FINALIZE THE VERIFICATION!
-                        await finalize_verification(
-                            self,
-                            None, # No interaction (automated)
-                            member,
-                            roblox_name,
-                            roblox_id,
-                            manual=False
-                        )
-                        print(f"✅ Successfully auto-verified {roblox_name} -> {member.display_name}!")
-
+                        from cogs.verify import complete_game_verification
+                        await complete_game_verification(self, int(roblox_id), roblox_name)
+                        print(f"✅ Game verification processed for {roblox_name}!")
                     except Exception as e:
                         print(f"❌ Error processing Roblox verification: {e}")
 
