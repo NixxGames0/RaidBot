@@ -129,8 +129,6 @@ def _prewarm_fonts() -> None:
         _font(sz)
         _font(sz, bold=True)
 
-_prewarm_fonts()
-
 def _tsize(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int]:
     bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -160,6 +158,7 @@ SZ_LABEL = 15   # stat column labels
 SZ_VAL   = 28   # stat values
 SZ_PVP   = 24   # PvP row values
 
+_prewarm_fonts()
 
 async def _fetch_image(session: aiohttp.ClientSession, url: str, timeout: int = 5) -> Image.Image | None:
     try:

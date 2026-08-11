@@ -71,7 +71,10 @@ class TicketControlView(discord.ui.View):
                 ephemeral=True
             )
 
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         # Update ticket status
         now = datetime.now(timezone.utc).isoformat()

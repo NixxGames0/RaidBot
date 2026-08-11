@@ -62,7 +62,10 @@ class PSPanelView(discord.ui.View):
         custom_id="ps_get_code"
     )
     async def get_code(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         member = interaction.user
         bot = interaction.client
