@@ -348,6 +348,21 @@ async def init_database():
             )"""
         )
 
+        # ─── Moderation table ─────────────────────────────────────────────────────
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS mod_actions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id    TEXT NOT NULL,
+                target_id   TEXT NOT NULL,
+                mod_id      TEXT NOT NULL,
+                action      TEXT NOT NULL,
+                reason      TEXT,
+                duration    TEXT,
+                expires_at  TEXT,
+                created_at  TEXT NOT NULL
+            )"""
+        )
+
         # Try adding missing columns (safe to run)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN weekly_points INTEGER DEFAULT 0",
@@ -401,8 +416,7 @@ COGS = [
     "cogs.afk",
     "cogs.profile",
     "cogs.pvp",
-    "cogs.verifyrandom",
-    "cogs.shutdown",
+    "cogs.moderation",
 ]
 
 
