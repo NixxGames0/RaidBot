@@ -507,7 +507,7 @@ class RoleBuilderView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         color2 = self.data.get("color2")
-        if color2:
+        if color2 is not None:   # must be 'is not None' — discord.Color(0) is falsy
             color_val = f"`#{self.data['color'].value:06x}` → `#{color2.value:06x}`"
         else:
             color_val = f"`#{self.data['color'].value:06x}`"
@@ -531,14 +531,43 @@ class RoleBuilderView(discord.ui.View):
         return embed
 
     async def update_embed(self, interaction: discord.Interaction):
+        """
+        Update the builder embed.  Works for both component interactions
+        (buttons/selects) and modal submissions.
+
+        Modal submissions have interaction.message = None, so edit_message()
+        raises ClientException.  We catch that and fall back to editing via
+        the stored original_interaction token instead.
+        """
         embed = self.build_embed()
-        try:
-            if not interaction.response.is_done():
+
+        # 1. Try the fast path: edit the message this interaction is on
+        if not interaction.response.is_done():
+            try:
                 await interaction.response.edit_message(embed=embed, view=self)
-            else:
-                await interaction.edit_original_response(embed=embed, view=self)
-        except discord.NotFound:
-            await interaction.followup.send("⏰ Your session expired. Please click 'Manage Role' again.", ephemeral=True)
+                return
+            except (discord.HTTPException, discord.ClientException):
+                # Modal submission — edit_message isn't valid; fall through
+                try:
+                    await interaction.response.defer()
+                except Exception:
+                    pass
+
+        # 2. Fallback: edit via the builder's original interaction token
+        if self.original_interaction:
+            try:
+                await self.original_interaction.edit_original_response(embed=embed, view=self)
+                return
+            except discord.NotFound:
+                pass
+            except Exception:
+                pass
+
+        # 3. Last resort: edit via the current interaction's webhook
+        try:
+            await interaction.edit_original_response(embed=embed, view=self)
+        except Exception:
+            pass
 
     async def _check_user(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -742,20 +771,43 @@ class ColorModal(discord.ui.Modal, title="Change Role Color"):
 
     @staticmethod
     def _parse_hex(raw: str):
-        raw = raw.strip().lstrip("#")
+        """Strip whitespace and # then parse as RGB hex integer."""
+        raw = raw.strip().lstrip("#").strip()
+        if len(raw) not in (3, 6):
+            return None
+        if len(raw) == 3:          # expand shorthand e.g. fff → ffffff
+            raw = raw[0]*2 + raw[1]*2 + raw[2]*2
         try:
             return discord.Color(int(raw, 16))
         except ValueError:
             return None
 
     async def on_submit(self, interaction: discord.Interaction):
-        parts = [p.strip() for p in self.color_input.value.split(",")]
-        color1 = self._parse_hex(parts[0]) if parts else None
-        color2 = self._parse_hex(parts[1]) if len(parts) > 1 else None
+        raw = self.color_input.value.strip()
+        parts = [p.strip() for p in raw.split(",")]
 
-        if color1 is not None:
-            self.view.data["color"] = color1
-            self.view.data["color2"] = color2   # None clears any existing gradient
+        color1 = self._parse_hex(parts[0]) if parts else None
+        if color1 is None:
+            await interaction.response.send_message(
+                f"❌ `{parts[0] if parts else ''}` is not a valid hex color.\n"
+                "Format: `#rrggbb`  or  `#rrggbb, #rrggbb` for a gradient.",
+                ephemeral=True,
+            )
+            return
+
+        color2 = None
+        if len(parts) > 1 and parts[1]:
+            color2 = self._parse_hex(parts[1])
+            if color2 is None:
+                await interaction.response.send_message(
+                    f"❌ `{parts[1]}` is not a valid hex color for the gradient stop.\n"
+                    "Format: `#rrggbb, #rrggbb`",
+                    ephemeral=True,
+                )
+                return
+
+        self.view.data["color"] = color1
+        self.view.data["color2"] = color2   # None clears any existing gradient
         await self.view.update_embed(interaction)
 
 
