@@ -92,15 +92,21 @@ async def fetch_raw_role_colors(guild: discord.Guild) -> dict:
 
         grad = rd.get("color_gradient")
         if isinstance(grad, dict):
-            colors = [c for c in (grad.get("colors") or []) if c]
+            # Use 'is not None' — 0 (black, #000000) is a valid colour but is falsy
+            colors = [c for c in (grad.get("colors") or []) if c is not None]
             if len(colors) >= 2:
                 out[rid] = to_rgb(colors[0]), to_rgb(colors[1])
+                logger.debug(f"Role {rid}: gradient {colors[0]:06x} → {colors[1]:06x}")
                 continue
             if colors:
                 out[rid] = to_rgb(colors[0]), None
                 continue
+        elif grad is not None:
+            logger.debug(f"Role {rid}: unexpected color_gradient format: {grad!r}")
 
         val = rd.get("color", 0)
+        if rid in {v for v in ROLE_ICON_MAP.values()}:
+            logger.debug(f"Role {rid}: flat color {val:06x}, color_gradient={grad!r}")
         out[rid] = (to_rgb(val) if val else _DEFAULT_ICON_COLOR, None)
 
     return out
@@ -532,42 +538,55 @@ class RoleBuilderView(discord.ui.View):
 
     async def update_embed(self, interaction: discord.Interaction):
         """
-        Update the builder embed.  Works for both component interactions
-        (buttons/selects) and modal submissions.
+        Update the builder embed.
 
-        Modal submissions have interaction.message = None, so edit_message()
-        raises ClientException.  We catch that and fall back to editing via
-        the stored original_interaction token instead.
+        Component interactions (buttons/selects): edit_message works directly.
+        Modal submissions: edit_message raises ClientException (no message);
+          defer the modal then edit via the stored original_interaction token.
         """
         embed = self.build_embed()
 
-        # 1. Try the fast path: edit the message this interaction is on
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.edit_message(embed=embed, view=self)
-                return
-            except (discord.HTTPException, discord.ClientException):
-                # Modal submission — edit_message isn't valid; fall through
+        if interaction.type == discord.InteractionType.modal_submit:
+            # Acknowledge the modal so Discord doesn't show "interaction failed"
+            if not interaction.response.is_done():
                 try:
                     await interaction.response.defer()
                 except Exception:
                     pass
 
-        # 2. Fallback: edit via the builder's original interaction token
-        if self.original_interaction:
-            try:
-                await self.original_interaction.edit_original_response(embed=embed, view=self)
-                return
-            except discord.NotFound:
-                pass
-            except Exception:
-                pass
+            # Edit the original builder message via the panel-button token
+            if self.original_interaction:
+                try:
+                    await self.original_interaction.edit_original_response(embed=embed, view=self)
+                    return
+                except discord.NotFound:
+                    # Token expired (>15 min) — let the user know
+                    try:
+                        await interaction.followup.send(
+                            "⚠️ Builder session expired. Please reopen the role panel.",
+                            ephemeral=True,
+                        )
+                    except Exception:
+                        pass
+                    return
+                except Exception as e:
+                    logger.error(f"update_embed modal edit failed: {e}")
+                    try:
+                        await interaction.followup.send(
+                            f"⚠️ Could not update preview: {e}", ephemeral=True
+                        )
+                    except Exception:
+                        pass
+            return
 
-        # 3. Last resort: edit via the current interaction's webhook
+        # Component interaction (button / select) — edit the message in place
         try:
-            await interaction.edit_original_response(embed=embed, view=self)
-        except Exception:
-            pass
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=self)
+            else:
+                await interaction.edit_original_response(embed=embed, view=self)
+        except Exception as e:
+            logger.error(f"update_embed component edit failed: {e}")
 
     async def _check_user(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -757,7 +776,7 @@ class ColorModal(discord.ui.Modal, title="Change Role Color"):
         self.view = view
 
         default = f"#{view.data['color'].value:06x}"
-        if view.data.get("color2"):
+        if view.data.get("color2") is not None:
             default += f", #{view.data['color2'].value:06x}"
 
         self.color_input = discord.ui.TextInput(
