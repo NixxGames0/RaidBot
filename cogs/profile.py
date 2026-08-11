@@ -1,12 +1,10 @@
 """
-/profile — generates a custom image card (Pillow) showing level, hoster stats,
-and PvP rank.  PvP columns are zeroed until the PvP system launches; the rank
-badge and tier table are already wired so adding real ELO is just a DB query.
+/profile — image card with uniform 16 px font throughout.
+Bold + color carry hierarchy instead of size changes.
 """
 
 import io
 import os
-import asyncio
 import aiohttp
 import discord
 from discord import app_commands
@@ -17,7 +15,6 @@ from PIL import Image, ImageDraw, ImageFont
 from bot import d1_query
 
 # ── PvP rank tiers ─────────────────────────────────────────────────────────────
-# (display_name, RGB accent color, RGB dark inner color)
 PVP_TIERS = [
     ("Master",   (255, 107, 107), (139,   0,   0)),
     ("Amethyst", (192, 132, 252), (109,  40, 217)),
@@ -48,20 +45,19 @@ def _load_rank_icon(rank_name: str) -> "Image.Image | None":
                 pass
     return None
 
-
-# ── Level formula (mirrors levels.py exactly) ──────────────────────────────────
+# ── Level formula ──────────────────────────────────────────────────────────────
 def _xp_needed(level: int) -> int:
     return 5 * (level ** 2) + 50 * level + 100
 
 def _total_xp_for_level(level: int) -> int:
     return sum(_xp_needed(l) for l in range(level))
 
-
-# ── Font loader with Windows + Linux fallbacks ─────────────────────────────────
+# ── Font loader ────────────────────────────────────────────────────────────────
 _font_cache: dict = {}
+FONT_SIZE = 16   # single font size for the entire card
 
-def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    key = (size, bold)
+def _font(bold: bool = False) -> ImageFont.FreeTypeFont:
+    key = bold
     if key in _font_cache:
         return _font_cache[key]
     candidates = (
@@ -85,7 +81,7 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     for path in candidates:
         if os.path.exists(path):
             try:
-                f = ImageFont.truetype(path, size)
+                f = ImageFont.truetype(path, FONT_SIZE)
                 break
             except Exception:
                 continue
@@ -106,21 +102,34 @@ def _rrect(draw: ImageDraw.ImageDraw, bbox, radius: int, fill):
 
 
 # ── Card constants ─────────────────────────────────────────────────────────────
-W, H       = 960, 280
-BG         = (13, 17, 23)
-BG2        = (22, 27, 34)
-MUTED      = (110, 118, 129)
-WHITE      = (255, 255, 255)
-BAR_BG     = (33, 38, 45)
-SEP        = (33, 40, 50)
-AV_SIZE    = 130
-AV_X, AV_Y = 20, (H - AV_SIZE) // 2   # avatar left/top
+W, H        = 960, 280
+BG          = (13, 17, 23)
+BG2         = (22, 27, 34)
+MUTED       = (110, 118, 129)
+WHITE       = (255, 255, 255)
+BAR_BG      = (33, 38, 45)
+SEP         = (33, 40, 50)
+AV_SIZE     = 130
+AV_X, AV_Y = 20, (H - AV_SIZE) // 2
+LINE_H      = 24   # vertical spacing between text lines
 
 
 async def _fetch_avatar(url: str) -> Image.Image | None:
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(str(url), timeout=aiohttp.ClientTimeout(total=5)) as r:
+                if r.status == 200:
+                    return Image.open(io.BytesIO(await r.read())).convert("RGBA")
+    except Exception:
+        return None
+
+
+async def _fetch_role_icon(role: discord.Role) -> Image.Image | None:
+    if not role.icon:
+        return None
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(str(role.icon.url), timeout=aiohttp.ClientTimeout(total=4)) as r:
                 if r.status == 200:
                     return Image.open(io.BytesIO(await r.read())).convert("RGBA")
     except Exception:
@@ -142,12 +151,13 @@ async def _build_card(
     weekly_pts: int, lifetime_pts: int, raids: int,
     pvp_rank: str, pvp_elo: int, pvp_wins: int, pvp_losses: int,
     tenure: str, accent: tuple,
+    top_role: discord.Role | None = None,
+    role_icon: Image.Image | None = None,
 ) -> io.BytesIO:
     # ── Background ─────────────────────────────────────────────────────────
     card = Image.new("RGBA", (W, H), (*BG, 255))
     d = ImageDraw.Draw(card)
 
-    # Subtle diagonal-ish gradient: darker at top-left, slightly lighter lower-right
     for y in range(H):
         t = y / H
         r = int(BG[0] + (BG2[0] - BG[0]) * t)
@@ -155,123 +165,160 @@ async def _build_card(
         b = int(BG[2] + (BG2[2] - BG[2]) * t)
         d.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-    # Left accent strip
     d.rectangle([0, 0, 7, H], fill=(*accent, 255))
 
     # ── Avatar ─────────────────────────────────────────────────────────────
     av_img = await _fetch_avatar(target.display_avatar.url)
     if av_img:
-        # Coloured border ring (4 px)
         ring_sz = AV_SIZE + 8
         ring = Image.new("RGBA", (ring_sz, ring_sz), (0, 0, 0, 0))
         ImageDraw.Draw(ring).ellipse([0, 0, ring_sz - 1, ring_sz - 1], fill=(*accent, 255))
         card.paste(ring, (AV_X - 4, AV_Y - 4), ring)
-        cropped = _circle(av_img, AV_SIZE)
-        card.paste(cropped, (AV_X, AV_Y), cropped)
+        av_circle = _circle(av_img, AV_SIZE)
+        card.paste(av_circle, (AV_X, AV_Y), av_circle)
     else:
         d.ellipse([AV_X, AV_Y, AV_X + AV_SIZE, AV_Y + AV_SIZE], fill=(*BG2, 255))
 
-    # ── Content column ─────────────────────────────────────────────────────
-    CX = AV_X + AV_SIZE + 26   # content X
-    COLS = 3
-    COL_W = 170                 # each stat column width
+    # ── Fonts (all 16 px) ──────────────────────────────────────────────────
+    F  = _font(bold=False)   # labels, sub-text
+    FB = _font(bold=True)    # names, values
 
-    # Username
-    fn_name = _font(34, bold=True)
-    name_str = target.display_name[:26]
-    d.text((CX, 18), name_str, font=fn_name, fill=WHITE)
+    # ── Layout ─────────────────────────────────────────────────────────────
+    CX    = AV_X + AV_SIZE + 26   # x start of content
+    COL_W = 165                   # stat column width
+    BADGE = 68                    # rank badge size
+    BX    = W - BADGE - 18        # badge x
+    BY    = (H - BADGE) // 2      # badge y (vertically centred)
 
-    # Sub line: level · rank · tenure
-    fn_sub = _font(17)
-    rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "—"
-    sub = f"Level {level}  ·  {rank_str} Global  ·  Member for {tenure}  ·  {exp:,} XP"
-    d.text((CX, 60), sub, font=fn_sub, fill=MUTED)
+    y = 18   # running y cursor
 
-    # ── XP progress bar ────────────────────────────────────────────────────
+    # ── Username ───────────────────────────────────────────────────────────
+    d.text((CX, y), target.display_name[:32], font=FB, fill=WHITE)
+    y += LINE_H
+
+    # ── Highest role ───────────────────────────────────────────────────────
+    if top_role and top_role.name != "@everyone":
+        role_color = (
+            (top_role.color.r, top_role.color.g, top_role.color.b)
+            if top_role.color.value else MUTED
+        )
+        ICON_SZ = FONT_SIZE   # same height as text so it sits flush
+        icon_y  = y + 2
+
+        if role_icon:
+            ri = _circle(role_icon, ICON_SZ)
+            card.paste(ri, (CX, icon_y), ri)
+        else:
+            d.ellipse([CX, icon_y, CX + ICON_SZ, icon_y + ICON_SZ], fill=(*role_color, 255))
+
+        d.text((CX + ICON_SZ + 6, y), top_role.name, font=FB, fill=role_color)
+        y += LINE_H
+
+    # ── Sub-line ───────────────────────────────────────────────────────────
+    rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
+    d.text(
+        (CX, y),
+        f"Level {level}  |  {rank_str} Global  |  {tenure} member  |  {exp:,} XP",
+        font=F,
+        fill=MUTED,
+    )
+    y += LINE_H + 6   # extra gap before bar
+
+    # ── XP bar ─────────────────────────────────────────────────────────────
     xp_cur  = _total_xp_for_level(level)
     xp_next = _total_xp_for_level(level + 1)
     needed  = xp_next - xp_cur
     prog    = max(0, exp - xp_cur)
     pct     = min(100, int(prog / needed * 100)) if needed else 100
 
-    BAR_X, BAR_Y = CX, 93
-    BAR_W = COL_W * COLS - 10
-    BAR_H = 14
+    BAR_W = COL_W * 3 - 10
+    BAR_H = 12
+    BAR_Y = y
 
-    _rrect(d, [BAR_X, BAR_Y, BAR_X + BAR_W, BAR_Y + BAR_H], BAR_H // 2, BAR_BG)
+    _rrect(d, [CX, BAR_Y, CX + BAR_W, BAR_Y + BAR_H], BAR_H // 2, BAR_BG)
     fill_w = max(BAR_H, int(BAR_W * pct / 100))
-    _rrect(d, [BAR_X, BAR_Y, BAR_X + fill_w, BAR_Y + BAR_H], BAR_H // 2, accent)
+    _rrect(d, [CX, BAR_Y, CX + fill_w, BAR_Y + BAR_H], BAR_H // 2, accent)
+    d.text((CX + BAR_W + 10, BAR_Y - 2), f"{pct}% to Level {level + 1}", font=F, fill=MUTED)
 
-    fn_pct = _font(15, bold=True)
-    d.text((BAR_X + BAR_W + 10, BAR_Y - 1), f"{pct}%  to Level {level + 1}", font=fn_pct, fill=MUTED)
+    y = BAR_Y + BAR_H + 14
 
-    # ── Divider ────────────────────────────────────────────────────────────
-    d.line([(CX, 122), (W - 18, 122)], fill=SEP, width=1)
+    # ── Divider 1 ──────────────────────────────────────────────────────────
+    d.line([(CX, y), (W - 18, y)], fill=SEP, width=1)
+    y += 12
 
-    # ── Stat helper ────────────────────────────────────────────────────────
-    fn_label = _font(14)
-    fn_val   = _font(23, bold=True)
-
-    def stat_col(i: int, label: str, value: str, color=WHITE):
+    # ── Hoster stats ────────────────────────────────────────────────────────
+    cols = [
+        ("Weekly Points",   f"{weekly_pts:,}"),
+        ("Lifetime Points", f"{lifetime_pts:,}"),
+        ("Raids Hosted",    f"{raids:,}"),
+    ]
+    for i, (label, value) in enumerate(cols):
         sx = CX + i * COL_W
-        d.text((sx, 128), label, font=fn_label, fill=MUTED)
-        d.text((sx, 147), value, font=fn_val,   fill=color)
+        d.text((sx, y),             label, font=F,  fill=MUTED)
+        d.text((sx, y + LINE_H),    value, font=FB, fill=WHITE)
 
-    # Hoster row
-    stat_col(0, "Weekly Points",   f"{weekly_pts:,}")
-    stat_col(1, "Lifetime Points", f"{lifetime_pts:,}")
-    stat_col(2, "Raids Hosted",    f"{raids:,}")
+    y += LINE_H * 2 + 16
 
-    # Divider
-    d.line([(CX, 188), (W - 18, 188)], fill=SEP, width=1)
+    # ── Divider 2 ──────────────────────────────────────────────────────────
+    d.line([(CX, y), (W - 18, y)], fill=SEP, width=1)
+    y += 12
 
-    # PvP row
+    # ── PvP row ────────────────────────────────────────────────────────────
     pvp_col, pvp_dark = _pvp_rank_colors(pvp_rank)
-    pvp_rec = f"{pvp_wins} / {pvp_losses}" if (pvp_wins or pvp_losses) else "— / —"
-    elo_str = str(pvp_elo) if pvp_elo else "—"
+    pvp_rec = f"{pvp_wins} / {pvp_losses}" if (pvp_wins or pvp_losses) else "- / -"
+    elo_str = str(pvp_elo) if pvp_elo else "-"
 
-    # PvP row — drawn at y=194/213 (below the second divider at y=188)
-    PY = 194   # label baseline
-    VY = 213   # value baseline
-    fn_rank_val = _font(22, bold=True)
-    d.text((CX,            PY), "PvP Rank", font=fn_label, fill=MUTED)
-    d.text((CX,            VY), pvp_rank,   font=fn_rank_val, fill=pvp_col)
-    d.text((CX + COL_W,   PY), "ELO",      font=fn_label, fill=MUTED)
-    d.text((CX + COL_W,   VY), elo_str,    font=fn_val,      fill=WHITE)
-    d.text((CX + COL_W*2, PY), "W / L",   font=fn_label, fill=MUTED)
-    d.text((CX + COL_W*2, VY), pvp_rec,   font=fn_val,      fill=WHITE)
+    pvp_cols = [
+        ("PvP Rank", pvp_rank, pvp_col),
+        ("ELO",      elo_str,  WHITE),
+        ("W / L",    pvp_rec,  WHITE),
+    ]
+    for i, (label, value, color) in enumerate(pvp_cols):
+        sx = CX + i * COL_W
+        d.text((sx, y),          label, font=F,  fill=MUTED)
 
-    # ── PvP rank badge (right side) — uses PNG from pvpranks/ ──────────────
-    BADGE = 72
-    BX = W - BADGE - 18
-    BY = (H - BADGE) // 2
+        if i == 0:
+            # Inline rank icon for the PvP Rank column
+            RANK_ICON_SZ = FONT_SIZE + 2   # 18 px, same visual weight as text
+            pvp_icon = _load_rank_icon(pvp_rank)
+            val_x = sx
 
-    rank_icon = _load_rank_icon(pvp_rank)
-    if rank_icon:
-        rank_icon = rank_icon.resize((BADGE, BADGE), Image.LANCZOS)
-        card.paste(rank_icon, (BX, BY), rank_icon)
+            if pvp_icon:
+                ri = pvp_icon.resize((RANK_ICON_SZ, RANK_ICON_SZ), Image.LANCZOS)
+                card.paste(ri, (sx, y + LINE_H + 2), ri)
+                val_x = sx + RANK_ICON_SZ + 5
+
+            d.text((val_x, y + LINE_H), value, font=FB, fill=color)
+        else:
+            d.text((sx, y + LINE_H), value, font=FB, fill=color)
+
+    # ── Rank badge (right) ─────────────────────────────────────────────────
+    pvp_icon = _load_rank_icon(pvp_rank)
+    if pvp_icon:
+        badge_img = pvp_icon.resize((BADGE, BADGE), Image.LANCZOS)
+        card.paste(badge_img, (BX, BY), badge_img)
     else:
-        # Fallback: colored circle with rank initial
         d.ellipse([BX, BY, BX + BADGE, BY + BADGE], fill=(*pvp_col, 255))
-        inner_pad = 7
+        ip = 6
         d.ellipse(
-            [BX + inner_pad, BY + inner_pad, BX + BADGE - inner_pad, BY + BADGE - inner_pad],
-            fill=(*pvp_dark, 255)
+            [BX + ip, BY + ip, BX + BADGE - ip, BY + BADGE - ip],
+            fill=(*pvp_dark, 255),
         )
-        fn_badge = _font(28, bold=True)
-        initial  = pvp_rank[0].upper()
-        iw, ih   = _tsize(d, initial, fn_badge)
-        d.text((BX + BADGE // 2 - iw // 2, BY + BADGE // 2 - ih // 2), initial,
-               font=fn_badge, fill=WHITE)
+        initial = pvp_rank[0].upper()
+        iw, ih  = _tsize(d, initial, FB)
+        d.text(
+            (BX + BADGE // 2 - iw // 2, BY + BADGE // 2 - ih // 2),
+            initial, font=FB, fill=WHITE,
+        )
 
-    # ── Render to PNG bytes ────────────────────────────────────────────────
+    # ── Render ─────────────────────────────────────────────────────────────
     buf = io.BytesIO()
     card.convert("RGB").save(buf, format="PNG", optimize=True)
     buf.seek(0)
     return buf
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _tenure(created_at: str) -> str:
     try:
         joined = datetime.fromisoformat(created_at)
@@ -287,14 +334,14 @@ def _tenure(created_at: str) -> str:
         return "Unknown"
 
 
-# ── Cog ───────────────────────────────────────────────────────────────────────
+# ── Cog ──────────────────────────────────────────────────────────────────────
 class ProfileCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(
         name="profile",
-        description="View a user's profile card — level, hoster stats, and PvP rank"
+        description="View a user's profile card"
     )
     @app_commands.describe(user="User to view (leave empty for yourself)")
     @app_commands.checks.cooldown(1, 5)
@@ -303,42 +350,54 @@ class ProfileCog(commands.Cog):
         await interaction.response.defer(ephemeral=False)
 
         row = await d1_query(
-            """SELECT level, exp, hoster_points, total_points_earned,
-                      weekly_points, raids_completed, created_at,
+            """SELECT level, exp, total_points_earned, weekly_points,
+                      raids_completed, created_at,
                       pvp_rank, pvp_elo, pvp_wins, pvp_losses
                FROM users WHERE discord_id = ?""",
             [str(target.id)]
         )
         if not row["results"]:
             return await interaction.followup.send(
-                f"❌ {target.mention} hasn't verified yet — they need `/verify` first.",
-                ephemeral=True
+                f"❌ {target.mention} hasn't verified yet.", ephemeral=True
             )
 
-        data = row["results"][0]
-        level        = data.get("level") or 1
-        exp          = data.get("exp") or 0
-        weekly_pts   = data.get("weekly_points") or 0
+        data         = row["results"][0]
+        level        = data.get("level")               or 1
+        exp          = data.get("exp")                 or 0
+        weekly_pts   = data.get("weekly_points")       or 0
         lifetime_pts = data.get("total_points_earned") or 0
-        raids        = data.get("raids_completed") or 0
-        created_at   = data.get("created_at") or ""
-
-        pvp_rank   = data.get("pvp_rank")   or "Unranked"
-        pvp_elo    = data.get("pvp_elo")    or 0
-        pvp_wins   = data.get("pvp_wins")   or 0
-        pvp_losses = data.get("pvp_losses") or 0
+        raids        = data.get("raids_completed")     or 0
+        created_at   = data.get("created_at")          or ""
+        pvp_rank     = data.get("pvp_rank")            or "Unranked"
+        pvp_elo      = data.get("pvp_elo")             or 0
+        pvp_wins     = data.get("pvp_wins")            or 0
+        pvp_losses   = data.get("pvp_losses")          or 0
 
         rank_row = await d1_query(
             "SELECT COUNT(*) + 1 AS rank FROM users WHERE exp > ?", [exp]
         )
         global_rank = rank_row["results"][0]["rank"] if rank_row["results"] else "N/A"
 
-        # Accent color = highest non-default role color, fallback blurple
-        accent = (88, 101, 242)
+        # Highest non-@everyone role
+        top_role: discord.Role | None = None
         for role in reversed(target.roles):
-            if role.color.value:
-                accent = (role.color.r, role.color.g, role.color.b)
+            if role.name != "@everyone":
+                top_role = role
                 break
+
+        # Accent from top role color, fallback blurple
+        accent = (88, 101, 242)
+        if top_role and top_role.color.value:
+            accent = (top_role.color.r, top_role.color.g, top_role.color.b)
+        else:
+            for role in reversed(target.roles):
+                if role.color.value:
+                    accent = (role.color.r, role.color.g, role.color.b)
+                    break
+
+        role_icon: Image.Image | None = None
+        if top_role and top_role.icon:
+            role_icon = await _fetch_role_icon(top_role)
 
         try:
             buf = await _build_card(
@@ -346,21 +405,25 @@ class ProfileCog(commands.Cog):
                 weekly_pts, lifetime_pts, raids,
                 pvp_rank, pvp_elo, pvp_wins, pvp_losses,
                 _tenure(created_at), accent,
+                top_role=top_role,
+                role_icon=role_icon,
             )
-            file = discord.File(buf, filename=f"profile_{target.id}.png")
-            await interaction.followup.send(file=file)
+            await interaction.followup.send(
+                file=discord.File(buf, filename=f"profile_{target.id}.png")
+            )
         except Exception as e:
             print(f"Profile card error: {e}")
-            # Fallback embed if image generation fails
             embed = discord.Embed(
                 description=(
-                    f"**Level {level}**  ·  **{exp:,} XP**  ·  **#{global_rank}** Global\n"
-                    f"Weekly: **{weekly_pts:,}**  ·  Lifetime: **{lifetime_pts:,}**  ·  Raids: **{raids:,}**"
+                    f"**Level {level}** · **{exp:,} XP** · **#{global_rank}** Global\n"
+                    f"Weekly: **{weekly_pts:,}** · Lifetime: **{lifetime_pts:,}** · Raids: **{raids:,}**"
                 ),
                 color=discord.Color.from_rgb(*accent),
             )
-            embed.set_author(name=target.display_name,
-                             icon_url=target.display_avatar.url if target.display_avatar else None)
+            embed.set_author(
+                name=target.display_name,
+                icon_url=target.display_avatar.url if target.display_avatar else None,
+            )
             await interaction.followup.send(embed=embed)
 
 
