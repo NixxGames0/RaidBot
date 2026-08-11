@@ -15,7 +15,17 @@ from PIL import Image, ImageDraw, ImageFont
 
 from bot import d1_query
 
-# ── PvP rank tiers ─────────────────────────────────────────────────────────────
+# ── PvP config ─────────────────────────────────────────────────────────────────
+PLACEMENT_MATCHES = 10
+
+# Only these role names will appear on the card — add/remove as needed
+RANK_ROLE_NAMES = {
+    "Founder", "Co-Founder",
+    "Head Staff", "Senior Staff", "Staff", "Trial Staff",
+    "Admin", "Moderator", "Senior Moderator", "Helper",
+    "Member",
+}
+
 PVP_TIERS = [
     ("Master",   (255, 107, 107), (139,   0,   0)),
     ("Amethyst", (192, 132, 252), (109,  40, 217)),
@@ -95,22 +105,22 @@ def _rrect(draw: ImageDraw.ImageDraw, bbox, radius: int, fill):
         draw.rectangle(bbox, fill=fill)
 
 # ── Card constants ─────────────────────────────────────────────────────────────
-W, H        = 960, 280
+W, H        = 960, 290
 BG          = (13, 17, 23)
 BG2         = (22, 27, 34)
 MUTED       = (110, 118, 129)
 WHITE       = (255, 255, 255)
 BAR_BG      = (33, 38, 45)
 SEP         = (33, 40, 50)
-AV_SIZE     = 130
-AV_X, AV_Y = 20, (H - AV_SIZE) // 2
+AV_SIZE     = 140
+AV_X, AV_Y = 18, (H - AV_SIZE) // 2
 
-# Font sizes
-SZ_NAME  = 30   # username + role (same line)
-SZ_SUB   = 16   # sub-line info
-SZ_LABEL = 14   # stat labels
-SZ_VAL   = 23   # stat values
-SZ_PVP   = 21   # PvP rank value
+# Font sizes — intentionally large so they're legible in Discord
+SZ_NAME  = 38   # username + role
+SZ_SUB   = 18   # sub-line
+SZ_LABEL = 15   # stat column labels
+SZ_VAL   = 28   # stat values
+SZ_PVP   = 24   # PvP row values
 
 
 async def _fetch_avatar(url: str) -> Image.Image | None:
@@ -145,10 +155,32 @@ def _circle(img: Image.Image, size: int) -> Image.Image:
 
 
 def _apply_alpha(img: Image.Image, opacity: float) -> Image.Image:
-    """Return a copy of img with alpha multiplied by opacity (0.0–1.0)."""
     r, g, b, a = img.split()
     a = a.point(lambda x: int(x * opacity))
     return Image.merge("RGBA", (r, g, b, a))
+
+
+def _draw_placement_ring(
+    draw: ImageDraw.ImageDraw,
+    cx: int, cy: int,
+    matches_done: int,
+    total: int = PLACEMENT_MATCHES,
+    accent: tuple = (88, 101, 242),
+) -> None:
+    """Segmented hollow ring: each arc = 1 placement match."""
+    R_OUT   = 20
+    STROKE  = 7
+    GAP_DEG = 7.0
+    seg_deg = (360.0 - total * GAP_DEG) / total
+    EMPTY   = (45, 52, 63)
+
+    for i in range(total):
+        start = -90.0 + i * (seg_deg + GAP_DEG)
+        end   = start + seg_deg
+        bbox  = [cx - R_OUT, cy - R_OUT, cx + R_OUT, cy + R_OUT]
+        draw.arc(bbox, start=start, end=end,
+                 fill=accent if i < matches_done else EMPTY,
+                 width=STROKE)
 
 
 async def _build_card(
@@ -156,12 +188,13 @@ async def _build_card(
     level: int, exp: int, global_rank,
     weekly_pts: int, lifetime_pts: int, raids: int,
     pvp_rank: str, pvp_elo: int, pvp_wins: int, pvp_losses: int,
+    pvp_placement_done: int, pvp_placement_left: int,
     tenure: str, accent: tuple,
     top_role: discord.Role | None = None,
     role_icon: Image.Image | None = None,
 ) -> io.BytesIO:
 
-    # ── Background ─────────────────────────────────────────────────────────
+    # ── Background gradient ────────────────────────────────────────────────
     card = Image.new("RGBA", (W, H), (*BG, 255))
     d = ImageDraw.Draw(card)
 
@@ -170,15 +203,12 @@ async def _build_card(
         row_col = tuple(int(BG[i] + (BG2[i] - BG[i]) * t) for i in range(3))
         d.line([(0, y), (W, y)], fill=(*row_col, 255))
 
-    # ── Rank icon watermark (far right, behind everything) ─────────────────
+    # ── Rank icon watermark — full card height, half off right edge ───────────
     rank_icon = _load_rank_icon(pvp_rank)
-    WM_SIZE = 250
     if rank_icon:
-        wm = rank_icon.resize((WM_SIZE, WM_SIZE), Image.LANCZOS)
-        wm = _apply_alpha(wm, 0.30)          # 30% opacity — "slightly visible"
-        wm_x = W - WM_SIZE + 15              # slightly clipped into right edge
-        wm_y = (H - WM_SIZE) // 2
-        card.paste(wm, (wm_x, wm_y), wm)
+        wm = rank_icon.resize((H, H), Image.LANCZOS)
+        wm = _apply_alpha(wm, 0.50)
+        card.paste(wm, (W - H // 2, 0), wm)
 
     # ── Left accent strip ──────────────────────────────────────────────────
     d.rectangle([0, 0, 7, H], fill=(*accent, 255))
@@ -190,8 +220,7 @@ async def _build_card(
         ring = Image.new("RGBA", (ring_sz, ring_sz), (0, 0, 0, 0))
         ImageDraw.Draw(ring).ellipse([0, 0, ring_sz - 1, ring_sz - 1], fill=(*accent, 255))
         card.paste(ring, (AV_X - 4, AV_Y - 4), ring)
-        av_circle = _circle(av_img, AV_SIZE)
-        card.paste(av_circle, (AV_X, AV_Y), av_circle)
+        card.paste(_circle(av_img, AV_SIZE), (AV_X, AV_Y), _circle(av_img, AV_SIZE))
     else:
         d.ellipse([AV_X, AV_Y, AV_X + AV_SIZE, AV_Y + AV_SIZE], fill=(*BG2, 255))
 
@@ -202,26 +231,25 @@ async def _build_card(
     fn_val   = _font(SZ_VAL,   bold=True)
     fn_pvp   = _font(SZ_PVP,   bold=True)
 
-    CX    = AV_X + AV_SIZE + 26
-    COL_W = 170
+    CX    = AV_X + AV_SIZE + 24
+    COL_W = 175
 
-    # ── Line 1: Username + [role icon] + Role name ─────────────────────────
-    name_str = target.display_name[:22]
-    d.text((CX, 16), name_str, font=fn_name, fill=WHITE)
-    name_w, _ = _tsize(d, name_str, fn_name)
+    # ── Line 1: Username + [role icon] + Role name (same line) ────────────
+    name_str = target.display_name[:20]
+    d.text((CX, 12), name_str, font=fn_name, fill=WHITE)
+    name_w, name_h = _tsize(d, name_str, fn_name)
 
     if top_role and top_role.name != "@everyone":
         role_color = (
             (top_role.color.r, top_role.color.g, top_role.color.b)
             if top_role.color.value else MUTED
         )
-        ICON_SZ = SZ_NAME - 4   # 26 px — matches cap height of name font
-        gap     = 14
-        icon_x  = CX + name_w + gap
-        icon_y  = 16 + 4        # +4 to vertically centre icon with text cap height
+        ICON_SZ = SZ_NAME - 4   # 34px — matches name cap height
+        icon_x  = CX + name_w + 14
+        icon_y  = 12 + 4
 
         if role_icon:
-            ri = _circle(role_icon, ICON_SZ)
+            ri = role_icon.resize((ICON_SZ, ICON_SZ), Image.LANCZOS)
             card.paste(ri, (icon_x, icon_y), ri)
         else:
             d.ellipse(
@@ -229,13 +257,12 @@ async def _build_card(
                 fill=(*role_color, 255),
             )
 
-        role_x = icon_x + ICON_SZ + 8
-        d.text((role_x, 16), top_role.name[:18], font=fn_name, fill=role_color)
+        d.text((icon_x + ICON_SZ + 10, 12), top_role.name[:16], font=fn_name, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
     d.text(
-        (CX, 58),
+        (CX, 60),
         f"Level {level}  \xb7  {rank_str} Global  \xb7  Member for {tenure}  \xb7  {exp:,} XP",
         font=fn_sub,
         fill=MUTED,
@@ -248,33 +275,33 @@ async def _build_card(
     prog    = max(0, exp - xp_cur)
     pct     = min(100, int(prog / needed * 100)) if needed else 100
 
-    BAR_X, BAR_Y = CX, 90
+    BAR_X, BAR_Y = CX, 92
     BAR_W = COL_W * 3 - 10
     BAR_H = 14
 
     _rrect(d, [BAR_X, BAR_Y, BAR_X + BAR_W, BAR_Y + BAR_H], BAR_H // 2, BAR_BG)
     fill_w = max(BAR_H, int(BAR_W * pct / 100))
     _rrect(d, [BAR_X, BAR_Y, BAR_X + fill_w, BAR_Y + BAR_H], BAR_H // 2, accent)
-    fn_pct = _font(SZ_LABEL, bold=True)
-    d.text((BAR_X + BAR_W + 10, BAR_Y), f"{pct}% to Level {level + 1}", font=fn_pct, fill=MUTED)
+    d.text((BAR_X + BAR_W + 10, BAR_Y), f"{pct}% to Level {level + 1}",
+           font=_font(SZ_LABEL, bold=True), fill=MUTED)
 
     # ── Divider 1 ──────────────────────────────────────────────────────────
-    d.line([(CX, 120), (W - 18, 120)], fill=SEP, width=1)
+    d.line([(CX, 122), (W - 18, 122)], fill=SEP, width=1)
 
-    # ── Hoster stats ────────────────────────────────────────────────────────
+    # ── Hoster stat columns ────────────────────────────────────────────────
     for i, (label, value) in enumerate([
         ("Weekly Points",   f"{weekly_pts:,}"),
         ("Lifetime Points", f"{lifetime_pts:,}"),
         ("Raids Hosted",    f"{raids:,}"),
     ]):
         sx = CX + i * COL_W
-        d.text((sx, 128), label, font=fn_label, fill=MUTED)
-        d.text((sx, 147), value, font=fn_val,   fill=WHITE)
+        d.text((sx, 130), label, font=fn_label, fill=MUTED)
+        d.text((sx, 149), value, font=fn_val,   fill=WHITE)
 
     # ── Divider 2 ──────────────────────────────────────────────────────────
-    d.line([(CX, 188), (W - 18, 188)], fill=SEP, width=1)
+    d.line([(CX, 193), (W - 18, 193)], fill=SEP, width=1)
 
-    # ── PvP row — no inline icon, just colored text ─────────────────────────
+    # ── PvP row ────────────────────────────────────────────────────────────
     pvp_col, _ = _pvp_rank_colors(pvp_rank)
     pvp_rec = f"{pvp_wins} / {pvp_losses}" if (pvp_wins or pvp_losses) else "- / -"
     elo_str = str(pvp_elo) if pvp_elo else "-"
@@ -285,8 +312,16 @@ async def _build_card(
         ("W / L",    pvp_rec,  WHITE),
     ]):
         sx = CX + i * COL_W
-        d.text((sx, 196), label, font=fn_label, fill=MUTED)
-        d.text((sx, 215), value, font=fn_pvp,   fill=color)
+        d.text((sx, 201), label, font=fn_label, fill=MUTED)
+        d.text((sx, 220), value, font=fn_pvp,   fill=color)
+
+    # ── Placement ring (shown while still in placement) ────────────────────
+    if not pvp_placement_done:
+        matches_done = max(0, PLACEMENT_MATCHES - (pvp_placement_left or PLACEMENT_MATCHES))
+        rank_w, rank_h = _tsize(d, pvp_rank, fn_pvp)
+        ring_cx = CX + rank_w + 16 + 20   # right of "Unranked" text + gap + radius
+        ring_cy = 220 + rank_h // 2 + 2   # vertically centred with rank text
+        _draw_placement_ring(d, ring_cx, ring_cy, matches_done, accent=accent)
 
     # ── Render ─────────────────────────────────────────────────────────────
     buf = io.BytesIO()
@@ -324,7 +359,8 @@ class ProfileCog(commands.Cog):
         row = await d1_query(
             """SELECT level, exp, total_points_earned, weekly_points,
                       raids_completed, created_at,
-                      pvp_rank, pvp_elo, pvp_wins, pvp_losses
+                      pvp_rank, pvp_elo, pvp_wins, pvp_losses,
+                      pvp_placement_done, pvp_placement_left
                FROM users WHERE discord_id = ?""",
             [str(target.id)]
         )
@@ -333,31 +369,31 @@ class ProfileCog(commands.Cog):
                 f"❌ {target.mention} hasn't verified yet.", ephemeral=True
             )
 
-        data         = row["results"][0]
-        level        = data.get("level")               or 1
-        exp          = data.get("exp")                 or 0
-        weekly_pts   = data.get("weekly_points")       or 0
-        lifetime_pts = data.get("total_points_earned") or 0
-        raids        = data.get("raids_completed")     or 0
-        created_at   = data.get("created_at")          or ""
-        pvp_rank     = data.get("pvp_rank")            or "Unranked"
-        pvp_elo      = data.get("pvp_elo")             or 0
-        pvp_wins     = data.get("pvp_wins")            or 0
-        pvp_losses   = data.get("pvp_losses")          or 0
+        data               = row["results"][0]
+        level              = data.get("level")               or 1
+        exp                = data.get("exp")                 or 0
+        weekly_pts         = data.get("weekly_points")       or 0
+        lifetime_pts       = data.get("total_points_earned") or 0
+        raids              = data.get("raids_completed")     or 0
+        created_at         = data.get("created_at")          or ""
+        pvp_rank           = data.get("pvp_rank")            or "Unranked"
+        pvp_elo            = data.get("pvp_elo")             or 0
+        pvp_wins           = data.get("pvp_wins")            or 0
+        pvp_losses         = data.get("pvp_losses")          or 0
+        pvp_placement_done = data.get("pvp_placement_done")  or 0
+        pvp_placement_left = data.get("pvp_placement_left")  or PLACEMENT_MATCHES
 
         rank_row = await d1_query(
             "SELECT COUNT(*) + 1 AS rank FROM users WHERE exp > ?", [exp]
         )
         global_rank = rank_row["results"][0]["rank"] if rank_row["results"] else "N/A"
 
-        # Highest non-@everyone role
         top_role: discord.Role | None = None
         for role in reversed(target.roles):
-            if role.name != "@everyone":
+            if role.name in RANK_ROLE_NAMES:
                 top_role = role
                 break
 
-        # Accent from top role color
         accent = (88, 101, 242)
         if top_role and top_role.color.value:
             accent = (top_role.color.r, top_role.color.g, top_role.color.b)
@@ -376,6 +412,7 @@ class ProfileCog(commands.Cog):
                 target, level, exp, global_rank,
                 weekly_pts, lifetime_pts, raids,
                 pvp_rank, pvp_elo, pvp_wins, pvp_losses,
+                pvp_placement_done, pvp_placement_left,
                 _tenure(created_at), accent,
                 top_role=top_role,
                 role_icon=role_icon,
