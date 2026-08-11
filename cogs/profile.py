@@ -93,8 +93,18 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
                 break
             except Exception:
                 continue
+    if f is None:
+        print(f"[Profile] WARNING: no truetype font found for size={size} bold={bold}, falling back to default")
     _font_cache[key] = f or ImageFont.load_default()
     return _font_cache[key]
+
+
+def _prewarm_fonts() -> None:
+    for sz in (SZ_NAME, SZ_ROLE, SZ_SUB, SZ_LABEL, SZ_VAL, SZ_PVP):
+        _font(sz)
+        _font(sz, bold=True)
+
+_prewarm_fonts()
 
 def _tsize(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int]:
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -126,24 +136,14 @@ SZ_VAL   = 28   # stat values
 SZ_PVP   = 24   # PvP row values
 
 
-async def _fetch_avatar(url: str) -> Image.Image | None:
+async def _fetch_image(session: aiohttp.ClientSession, url: str, timeout: int = 5) -> Image.Image | None:
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(str(url), timeout=aiohttp.ClientTimeout(total=5)) as r:
-                if r.status == 200:
-                    return Image.open(io.BytesIO(await r.read())).convert("RGBA")
-    except Exception:
-        return None
-
-
-async def _fetch_role_icon(role: discord.Role) -> Image.Image | None:
-    if not role.icon:
-        return None
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(str(role.icon.url), timeout=aiohttp.ClientTimeout(total=4)) as r:
-                if r.status == 200:
-                    return Image.open(io.BytesIO(await r.read())).convert("RGBA")
+        async with session.get(str(url), timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            if r.status == 200:
+                data = await r.read()
+                img = Image.open(io.BytesIO(data))
+                img.load()
+                return img.convert("RGBA")
     except Exception:
         return None
 
@@ -239,6 +239,7 @@ def _draw_placement_ring(
 
 
 async def _build_card(
+    session: aiohttp.ClientSession,
     target: discord.Member,
     level: int, exp: int, global_rank,
     weekly_pts: int, lifetime_pts: int, raids: int,
@@ -246,7 +247,6 @@ async def _build_card(
     pvp_placement_done: int, pvp_placement_left: int,
     tenure: str, accent: tuple,
     top_role: discord.Role | None = None,
-    role_icon: Image.Image | None = None,
 ) -> io.BytesIO:
 
     # ── Background gradient ────────────────────────────────────────────────
@@ -270,13 +270,14 @@ async def _build_card(
     d.rectangle([0, 0, 7, H], fill=(*accent, 255))
 
     # ── Avatar ─────────────────────────────────────────────────────────────
-    av_img = await _fetch_avatar(target.display_avatar.url)
+    av_img = await _fetch_image(session, str(target.display_avatar.url))
     if av_img:
+        av_circle = _circle(av_img, AV_SIZE)
         ring_sz = AV_SIZE + 8
         ring = Image.new("RGBA", (ring_sz, ring_sz), (0, 0, 0, 0))
         ImageDraw.Draw(ring).ellipse([0, 0, ring_sz - 1, ring_sz - 1], fill=(*accent, 255))
         card.paste(ring, (AV_X - 4, AV_Y - 4), ring)
-        card.paste(_circle(av_img, AV_SIZE), (AV_X, AV_Y), _circle(av_img, AV_SIZE))
+        card.paste(av_circle, (AV_X, AV_Y), av_circle)
     else:
         d.ellipse([AV_X, AV_Y, AV_X + AV_SIZE, AV_Y + AV_SIZE], fill=(*BG2, 255))
 
@@ -296,14 +297,18 @@ async def _build_card(
     name_w, name_h = _tsize(d, name_str, fn_name)
 
     if top_role and top_role.name != "@everyone":
+        role_icon: Image.Image | None = None
+        if top_role.icon:
+            role_icon = await _fetch_image(session, str(top_role.icon.url), timeout=4)
+
         role_color = (
             (top_role.color.r, top_role.color.g, top_role.color.b)
             if top_role.color.value else MUTED
         )
         fn_role = _font(SZ_ROLE, bold=True)
-        ICON_SZ = SZ_ROLE          # icon matches role text height
+        ICON_SZ = SZ_ROLE
         icon_x  = CX + name_w + 14
-        icon_y  = 12 + (SZ_NAME - SZ_ROLE) // 2  # vertically centre with name
+        icon_y  = 12 + (SZ_NAME - SZ_ROLE) // 2
 
         if role_icon:
             ri = role_icon.resize((ICON_SZ, ICON_SZ), Image.LANCZOS)
@@ -421,6 +426,14 @@ def _tenure(created_at: str) -> str:
 class ProfileCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._session: aiohttp.ClientSession | None = None
+
+    async def cog_load(self) -> None:
+        self._session = aiohttp.ClientSession()
+
+    async def cog_unload(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     @app_commands.command(name="profile", description="View a user's profile card")
     @app_commands.describe(user="User to view (leave empty for yourself)")
@@ -475,25 +488,24 @@ class ProfileCog(commands.Cog):
                     accent = (role.color.r, role.color.g, role.color.b)
                     break
 
-        role_icon: Image.Image | None = None
-        if top_role and top_role.icon:
-            role_icon = await _fetch_role_icon(top_role)
+        session = self._session or aiohttp.ClientSession()
 
         try:
             buf = await _build_card(
+                session,
                 target, level, exp, global_rank,
                 weekly_pts, lifetime_pts, raids,
                 pvp_rank, pvp_elo, pvp_wins, pvp_losses,
                 pvp_placement_done, pvp_placement_left,
                 _tenure(created_at), accent,
                 top_role=top_role,
-                role_icon=role_icon,
             )
             await interaction.followup.send(
                 file=discord.File(buf, filename=f"profile_{target.id}.png")
             )
         except Exception as e:
-            print(f"Profile card error: {e}")
+            import traceback
+            print(f"Profile card error: {e}\n{traceback.format_exc()}")
             embed = discord.Embed(
                 description=(
                     f"**Level {level}** · **{exp:,} XP** · **#{global_rank}** Global\n"

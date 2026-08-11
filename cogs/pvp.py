@@ -1696,17 +1696,18 @@ class PvPCog(commands.Cog):
     async def pvp_add_code(self, interaction: discord.Interaction, code: str):
         if not is_staff(interaction.user):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         try:
             await d1_query(
                 "INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)",
                 [code.strip()],
             )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ PS code `{code.strip()}` added to the pool.", ephemeral=True
             )
         except Exception:
-            await interaction.response.send_message(
-                f"❌ That code already exists in the pool.", ephemeral=True
+            await interaction.followup.send(
+                "❌ That code already exists in the pool.", ephemeral=True
             )
 
     @app_commands.command(name="pvpremovecode", description="Remove a PS code from the pool (Staff only)")
@@ -1714,10 +1715,11 @@ class PvPCog(commands.Cog):
     async def pvp_remove_code(self, interaction: discord.Interaction, code: str):
         if not is_staff(interaction.user):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         await d1_query(
             "DELETE FROM pvp_ps_codes WHERE code = ?", [code.strip()]
         )
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ PS code `{code.strip()}` removed from the pool.", ephemeral=True
         )
 
@@ -1725,14 +1727,15 @@ class PvPCog(commands.Cog):
     async def pvp_list_codes(self, interaction: discord.Interaction):
         if not is_staff(interaction.user):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         rows = await d1_query("SELECT code, match_id FROM pvp_ps_codes ORDER BY code", [])
         if not rows["results"]:
-            return await interaction.response.send_message("No PS codes in the pool.", ephemeral=True)
+            return await interaction.followup.send("No PS codes in the pool.", ephemeral=True)
         lines = []
         for r in rows["results"]:
             status = f"in use (match `{r['match_id']}`)" if r["match_id"] else "available"
             lines.append(f"`{r['code']}` — {status}")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "**PS Code Pool:**\n" + "\n".join(lines), ephemeral=True
         )
 
