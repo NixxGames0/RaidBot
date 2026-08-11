@@ -136,16 +136,19 @@ class GiveawayTicketControlView(discord.ui.View):
 
     @discord.ui.button(label="✅ Delivered", style=discord.ButtonStyle.success, custom_id="giveaway_ticket_deliver")
     async def deliver_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        allowed = (interaction.user.id == self.host_id or
-                   any(role.id in (HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID) for role in interaction.user.roles))
-        if not allowed:
-            return await interaction.response.send_message("❌ Only the host or Head Staff can mark as delivered.", ephemeral=True)
+        try:
+            allowed = (interaction.user.id == self.host_id or
+                       any(role.id in (HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID) for role in interaction.user.roles))
+            if not allowed:
+                return await interaction.response.send_message("❌ Only the host or Head Staff can mark as delivered.", ephemeral=True)
 
-        await interaction.response.send_message(
-            "⚠️ Are you sure the prize has been delivered? This will delete the ticket channel.",
-            view=ConfirmDeliverView(self.channel_id, self.giveaway_id),
-            ephemeral=True
-        )
+            await interaction.response.send_message(
+                "⚠️ Are you sure the prize has been delivered? This will delete the ticket channel.",
+                view=ConfirmDeliverView(self.channel_id, self.giveaway_id),
+                ephemeral=True
+            )
+        except discord.NotFound:
+            return
 
 
 class ConfirmDeliverView(discord.ui.View):
@@ -923,26 +926,31 @@ class GiveawayPublicView(discord.ui.View):
 
     @discord.ui.button(label="🎁 Join Giveaway", style=discord.ButtonStyle.success, custom_id="join_giveaway")
     async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         row = await d1_query(
             "SELECT required_role_id, entrants, status, host_id, giveaway_id, winners_count FROM giveaways WHERE giveaway_id = ?",
             [self.giveaway_id]
         )
         if not row["results"]:
-            return await interaction.response.send_message("❌ Giveaway not found.", ephemeral=True)
+            return await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
         data = row["results"][0]
         if data["status"] != "active":
-            return await interaction.response.send_message("⏰ This giveaway has ended.", ephemeral=True)
+            return await interaction.followup.send("⏰ This giveaway has ended.", ephemeral=True)
 
-        required_role_id = int(data["required_role_id"])
+        required_role_id = int(data["required_role_id"]) if data["required_role_id"] else 0
         if required_role_id:
             role = interaction.guild.get_role(required_role_id)
             if role and role not in interaction.user.roles:
-                return await interaction.response.send_message(f"❌ You need the {role.mention} role to join this giveaway.", ephemeral=True)
+                return await interaction.followup.send(f"❌ You need the {role.mention} role to join this giveaway.", ephemeral=True)
 
         entrants = json.loads(data["entrants"])
         user_id_str = str(interaction.user.id)
         if user_id_str in entrants:
-            return await interaction.response.send_message("⚠️ You are already entered in this giveaway!", ephemeral=True)
+            return await interaction.followup.send("⚠️ You are already entered in this giveaway!", ephemeral=True)
 
         entrants.append(user_id_str)
         await d1_query(
@@ -951,7 +959,7 @@ class GiveawayPublicView(discord.ui.View):
         )
 
         await self.update_embed(interaction)
-        await interaction.response.send_message("✅ You have been entered! Good luck!", ephemeral=True)
+        await interaction.followup.send("✅ You have been entered! Good luck!", ephemeral=True)
 
         embed = discord.Embed(
             title="🎁 User Joined Giveaway",

@@ -142,22 +142,17 @@ class ShopPanelView(discord.ui.View):
         custom_id="shop_buy"
     )
     async def buy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Hoster+ only
-        if not is_hoster(interaction.user) and not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You need the Hoster role to use the shop.",
-                ephemeral=True
-            )
-
-        # Check if user is linked
-        if not is_linked(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You need to be verified first before using the shop.",
-                ephemeral=True
-            )
-
-        # Defer before D1 queries to avoid 10062 on cold-start
         try:
+            if not is_hoster(interaction.user) and not is_staff(interaction.user):
+                return await interaction.response.send_message(
+                    "❌ You need the Hoster role to use the shop.",
+                    ephemeral=True
+                )
+            if not is_linked(interaction.user):
+                return await interaction.response.send_message(
+                    "❌ You need to be verified first before using the shop.",
+                    ephemeral=True
+                )
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
@@ -494,12 +489,12 @@ class ShopOrderControlView(discord.ui.View):
         custom_id="shop_complete"
     )
     async def complete_order(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Head Staff+ only
         if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Only Head Staff and Founder can complete orders.",
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message("❌ Only Head Staff and Founder can complete orders.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
 
         try:
             await interaction.response.defer()
@@ -574,12 +569,12 @@ class ShopOrderControlView(discord.ui.View):
         custom_id="shop_cancel"
     )
     async def cancel_order(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Head Staff+ only
         if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Only Head Staff and Founder can cancel orders.",
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message("❌ Only Head Staff and Founder can cancel orders.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
 
         try:
             await interaction.response.defer()

@@ -801,10 +801,9 @@ class CustomRolePanelView(discord.ui.View):
 
     @discord.ui.button(label="🆕 Manage Role", style=discord.ButtonStyle.success, custom_id="cr_manage")
     async def manage_role(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
-
         try:
+            if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
+                return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
@@ -831,15 +830,14 @@ class CustomRolePanelView(discord.ui.View):
 
     @discord.ui.button(label="🎨 Change Icon", style=discord.ButtonStyle.secondary, custom_id="cr_change_icon")
     async def change_icon(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
-        if not AVAILABLE_ICONS:
-            return await interaction.response.send_message(
-                "❌ No icons available. Add PNG files to the `icons/` folder.",
-                ephemeral=True,
-            )
-
         try:
+            if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
+                return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
+            if not AVAILABLE_ICONS:
+                return await interaction.response.send_message(
+                    "❌ No icons available. Add PNG files to the `icons/` folder.",
+                    ephemeral=True,
+                )
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
@@ -863,10 +861,9 @@ class CustomRolePanelView(discord.ui.View):
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
     async def preview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
-
         try:
+            if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
+                return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
@@ -890,10 +887,9 @@ class CustomRolePanelView(discord.ui.View):
 
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="cr_delete")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
-
         try:
+            if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
+                return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return

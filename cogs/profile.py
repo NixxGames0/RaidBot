@@ -130,6 +130,31 @@ if _FC_BOLD:
 if _FC_REGULAR:
     print(f"[Profile] fc-list regular font: {_FC_REGULAR}")
 
+
+def _ensure_fonts() -> None:
+    """Download DejaVu fonts into fonts/ if not already present."""
+    import urllib.request
+    _base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+    fonts_dir = os.path.join(_base, "fonts")
+    os.makedirs(fonts_dir, exist_ok=True)
+    _GH = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/"
+    downloads = {
+        "bold.ttf":    _GH + "DejaVuSans-Bold.ttf",
+        "regular.ttf": _GH + "DejaVuSans.ttf",
+    }
+    for filename, url in downloads.items():
+        path = os.path.join(fonts_dir, filename)
+        if not os.path.exists(path):
+            try:
+                print(f"[Profile] Downloading {filename} …")
+                urllib.request.urlretrieve(url, path)
+                print(f"[Profile] Downloaded {filename} ({os.path.getsize(path):,} bytes)")
+            except Exception as e:
+                print(f"[Profile] Font download failed ({filename}): {e}")
+
+
+_ensure_fonts()
+
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     key = (size, bold)
     if key in _font_cache:

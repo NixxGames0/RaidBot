@@ -64,12 +64,12 @@ class TicketControlView(discord.ui.View):
         custom_id="ticket_close"
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if user has permission (ticket owner or staff)
         if interaction.user.id != self.user_id and not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Only the ticket owner or staff can close this ticket.",
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message("❌ Only the ticket owner or staff can close this ticket.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
 
         try:
             await interaction.response.defer(ephemeral=True)
@@ -130,10 +130,11 @@ class TicketControlView(discord.ui.View):
     )
     async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Only staff can claim tickets.",
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message("❌ Only staff can claim tickets.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
 
         try:
             await interaction.response.defer(ephemeral=True)

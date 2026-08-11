@@ -1458,44 +1458,47 @@ class VerifyPanelView(discord.ui.View):
         custom_id="verify_start_button"
     )
     async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_verified(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You must be verified with Double Counter first before you can link your Roblox account.",
-                ephemeral=True
+        try:
+            if not is_verified(interaction.user):
+                return await interaction.response.send_message(
+                    "❌ You must be verified with Double Counter first before you can link your Roblox account.",
+                    ephemeral=True
+                )
+
+            embed = discord.Embed(
+                title="🔐 Choose Verification Method",
+                description="How would you like to prove ownership of your Roblox account?",
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(timezone.utc)
             )
 
-        embed = discord.Embed(
-            title="🔐 Choose Verification Method",
-            description="How would you like to prove ownership of your Roblox account?",
-            color=discord.Color.blurple(),
-            timestamp=datetime.now(timezone.utc)
-        )
+            embed.add_field(
+                name="📝 Bio Code",
+                value=(
+                    "Add a short code to your Roblox profile's **About** section.\n"
+                    "Great if you don't want to join a game."
+                ),
+                inline=False
+            )
 
-        embed.add_field(
-            name="📝 Bio Code",
-            value=(
-                "Add a short code to your Roblox profile's **About** section.\n"
-                "Great if you don't want to join a game."
-            ),
-            inline=False
-        )
+            embed.add_field(
+                name="🎮 Join Game",
+                value=(
+                    f"Join **{RHVERIF_GAME_NAME}** on Roblox and the bot verifies you automatically.\n"
+                    "Fastest method — no profile editing required!"
+                ),
+                inline=False
+            )
 
-        embed.add_field(
-            name="🎮 Join Game",
-            value=(
-                f"Join **{RHVERIF_GAME_NAME}** on Roblox and the bot verifies you automatically.\n"
-                "Fastest method — no profile editing required!"
-            ),
-            inline=False
-        )
+            embed.set_footer(text="Select a method from the dropdown below")
 
-        embed.set_footer(text="Select a method from the dropdown below")
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=VerifyMethodView(),
-            ephemeral=True
-        )
+            await interaction.response.send_message(
+                embed=embed,
+                view=VerifyMethodView(),
+                ephemeral=True
+            )
+        except discord.NotFound:
+            return
 
 
 # ── Verify Cog ──────────────────────────────────────────────────────────────

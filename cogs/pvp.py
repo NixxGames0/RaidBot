@@ -1749,26 +1749,24 @@ class PvPPanelView(discord.ui.View):
     @discord.ui.button(label="Start PvP", style=discord.ButtonStyle.blurple, emoji="⚔️",
                        custom_id="pvp_start")
     async def start_pvp(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cog: PvPCog = interaction.client.cogs.get("PvPCog")
-        if not cog:
-            return await interaction.response.send_message("❌ PvP system offline.", ephemeral=True)
-
-        guild_id = interaction.guild_id
-
-        # All in-memory checks are synchronous — safe before defer
-        if not is_linked(interaction.user):
-            return await interaction.response.send_message(
-                "❌ Link your Roblox account to play PvP.", ephemeral=True)
-
-        if cog._in_match(interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are already in an active match.", ephemeral=True)
-        if cog._in_queue(guild_id, interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are already in the queue. Use `/pvpleave` to exit.", ephemeral=True)
-
-        # Defer before the D1 query to avoid 10062 on cold-start
         try:
+            cog: PvPCog = interaction.client.cogs.get("PvPCog")
+            if not cog:
+                return await interaction.response.send_message("❌ PvP system offline.", ephemeral=True)
+
+            guild_id = interaction.guild_id
+
+            if not is_linked(interaction.user):
+                return await interaction.response.send_message(
+                    "❌ Link your Roblox account to play PvP.", ephemeral=True)
+
+            if cog._in_match(interaction.user.id):
+                return await interaction.response.send_message(
+                    "❌ You are already in an active match.", ephemeral=True)
+            if cog._in_queue(guild_id, interaction.user.id):
+                return await interaction.response.send_message(
+                    "❌ You are already in the queue. Use `/pvpleave` to exit.", ephemeral=True)
+
             await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return

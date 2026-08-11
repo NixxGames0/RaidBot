@@ -544,11 +544,15 @@ class FlaggedApprovalView(discord.ui.View):
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         allowed = {HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
         if not any(r.id in allowed for r in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You do not have permission.",
-                ephemeral=True
-            )
-        await interaction.response.defer()
+            try:
+                await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
         raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
         if not await self._load_from_db(raid_id or self.raid_id):
             return await interaction.followup.send("❌ Flagged raid data not found in DB. It may have already been processed.", ephemeral=True)
@@ -602,11 +606,15 @@ class FlaggedApprovalView(discord.ui.View):
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
         allowed = {HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
         if not any(r.id in allowed for r in interaction.user.roles):
-            return await interaction.response.send_message(
-                "❌ You do not have permission.",
-                ephemeral=True
-            )
-        await interaction.response.defer()
+            try:
+                await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
+            except discord.NotFound:
+                pass
+            return
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
         raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
         if not await self._load_from_db(raid_id or self.raid_id):
             return await interaction.followup.send("❌ Flagged raid data not found in DB. It may have already been processed.", ephemeral=True)
@@ -1346,15 +1354,15 @@ class JoinRaidView(discord.ui.View):
         custom_id="join_raid_btn"
     )
     async def join_raid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if is_blacklisted(interaction.user):
-            return await interaction.response.send_message(
-                "🚫 You are blacklisted.",
-                ephemeral=True
-            )
         try:
+            if is_blacklisted(interaction.user):
+                return await interaction.response.send_message(
+                    "🚫 You are blacklisted.",
+                    ephemeral=True
+                )
             await interaction.response.send_modal(JoinRaidModal())
-        except (discord.NotFound, discord.HTTPException):
-            pass
+        except discord.NotFound:
+            return
 
 
 class RaidControlView(discord.ui.View):
@@ -1368,20 +1376,23 @@ class RaidControlView(discord.ui.View):
         custom_id="update_wave_btn"
     )
     async def update_wave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        raid = get_raid(interaction.guild_id)
-        if not raid:
-            raid = await get_active_raid_from_db(interaction.guild_id)
-            if raid:
-                raids[interaction.guild_id] = raid
-        if not raid or interaction.user.id not in raid["hosters"]:
-            return await interaction.response.send_message(
-                "❌ Only hosters can update the wave.",
-                ephemeral=True
-            )
-        if not interaction.response.is_done():
-            await interaction.response.send_modal(UpdateWaveModal())
-        else:
-            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        try:
+            raid = get_raid(interaction.guild_id)
+            if not raid:
+                raid = await get_active_raid_from_db(interaction.guild_id)
+                if raid:
+                    raids[interaction.guild_id] = raid
+            if not raid or interaction.user.id not in raid["hosters"]:
+                return await interaction.response.send_message(
+                    "❌ Only hosters can update the wave.",
+                    ephemeral=True
+                )
+            if not interaction.response.is_done():
+                await interaction.response.send_modal(UpdateWaveModal())
+            else:
+                await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        except discord.NotFound:
+            return
 
     @discord.ui.button(
         label="End Raid",
@@ -1390,20 +1401,23 @@ class RaidControlView(discord.ui.View):
         custom_id="end_raid_btn"
     )
     async def end_raid_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        raid = get_raid(interaction.guild_id)
-        if not raid:
-            raid = await get_active_raid_from_db(interaction.guild_id)
-            if raid:
-                raids[interaction.guild_id] = raid
-        if not raid or interaction.user.id not in raid["hosters"]:
-            return await interaction.response.send_message(
-                "❌ Only hosters can end the raid.",
-                ephemeral=True
-            )
-        if not interaction.response.is_done():
-            await interaction.response.send_modal(WaveEndModal())
-        else:
-            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        try:
+            raid = get_raid(interaction.guild_id)
+            if not raid:
+                raid = await get_active_raid_from_db(interaction.guild_id)
+                if raid:
+                    raids[interaction.guild_id] = raid
+            if not raid or interaction.user.id not in raid["hosters"]:
+                return await interaction.response.send_message(
+                    "❌ Only hosters can end the raid.",
+                    ephemeral=True
+                )
+            if not interaction.response.is_done():
+                await interaction.response.send_modal(WaveEndModal())
+            else:
+                await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        except discord.NotFound:
+            return
 
 
 class HosterInviteView(discord.ui.View):
@@ -1547,25 +1561,25 @@ class StartRaidPanelView(discord.ui.View):
         custom_id="start_raid_btn"
     )
     async def start_raid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_hoster(interaction.user) and not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You need the Hoster role to start a raid.",
-                ephemeral=True
-            )
-        if is_user_hosting(interaction.user.id):
-            return await interaction.response.send_message(
-                "❌ You are already hosting a raid in another server! Finish that raid first.",
-                ephemeral=True
-            )
-        if raid_exists(interaction.guild_id):
-            return await interaction.response.send_message(
-                "❌ A raid is already active.",
-                ephemeral=True
-            )
         try:
+            if not is_hoster(interaction.user) and not is_staff(interaction.user):
+                return await interaction.response.send_message(
+                    "❌ You need the Hoster role to start a raid.",
+                    ephemeral=True
+                )
+            if is_user_hosting(interaction.user.id):
+                return await interaction.response.send_message(
+                    "❌ You are already hosting a raid in another server! Finish that raid first.",
+                    ephemeral=True
+                )
+            if raid_exists(interaction.guild_id):
+                return await interaction.response.send_message(
+                    "❌ A raid is already active.",
+                    ephemeral=True
+                )
             await interaction.response.send_modal(StartRaidModal())
-        except (discord.NotFound, discord.HTTPException):
-            pass
+        except discord.NotFound:
+            return
 
 
 # ── Raid Cog ──────────────────────────────────────────────────────────────────
