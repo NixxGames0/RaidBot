@@ -1526,6 +1526,8 @@ class HosterInviteView(discord.ui.View):
         )
         try:
             host = interaction.client.get_user(self.host_id)
+            if host is None:
+                host = await interaction.client.fetch_user(self.host_id)
             if host:
                 await host.send(
                     f"❌ **Raid Hub** — <@{self.invitee_id}> has denied your hoster invite."

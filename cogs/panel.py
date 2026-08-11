@@ -169,7 +169,10 @@ class PSPanelView(discord.ui.View):
         custom_id="ps_release_code"
     )
     async def release_code(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         member = interaction.user
         bot = interaction.client
@@ -235,7 +238,10 @@ class PSPanelView(discord.ui.View):
         custom_id="ps_reveal_code"
     )
     async def reveal_code(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         member = interaction.user
 

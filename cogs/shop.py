@@ -156,10 +156,16 @@ class ShopPanelView(discord.ui.View):
                 ephemeral=True
             )
 
+        # Defer before D1 queries to avoid 10062 on cold-start
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         # Get shop items
         items = await get_shop_items()
         if not items:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "❌ No items available in the shop.",
                 ephemeral=True
             )
@@ -178,7 +184,7 @@ class ShopPanelView(discord.ui.View):
         total_earned = await get_user_total_earned(interaction.user.id)
         embed.set_footer(text=f"Balance: {points} pts | Total Earned: {total_earned} pts")
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=embed,
             view=view,
             ephemeral=True
@@ -495,7 +501,10 @@ class ShopOrderControlView(discord.ui.View):
                 ephemeral=True
             )
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
 
         # Get the channel
         channel = interaction.guild.get_channel(self.channel_id)
@@ -572,7 +581,10 @@ class ShopOrderControlView(discord.ui.View):
                 ephemeral=True
             )
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            return
 
         # Get the channel
         channel = interaction.guild.get_channel(self.channel_id)

@@ -801,7 +801,12 @@ class CustomRolePanelView(discord.ui.View):
     @discord.ui.button(label="🆕 Manage Role", style=discord.ButtonStyle.success, custom_id="cr_manage")
     async def manage_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         existing = await get_custom_role(interaction.user.id)
         mode = "edit" if existing else "create"
@@ -809,7 +814,7 @@ class CustomRolePanelView(discord.ui.View):
         if existing:
             role = interaction.guild.get_role(existing)
             if not role:
-                return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
+                return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
             existing_data = {"name": role.name, "color": role.color}
         else:
             existing_data = None
@@ -821,18 +826,22 @@ class CustomRolePanelView(discord.ui.View):
             original_interaction=interaction,
         )
         embed = view.build_embed()
-        await safe_respond(interaction, embed=embed, view=view, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="🎨 Change Icon", style=discord.ButtonStyle.secondary, custom_id="cr_change_icon")
     async def change_icon(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
         if not AVAILABLE_ICONS:
-            return await safe_respond(
-                interaction,
+            return await interaction.response.send_message(
                 "❌ No icons available. Add PNG files to the `icons/` folder.",
                 ephemeral=True,
             )
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
 
         existing = await get_custom_role(interaction.user.id)
         target_role = None
@@ -849,18 +858,24 @@ class CustomRolePanelView(discord.ui.View):
             role_color=role_color,
             target_role=target_role,
         )
-        await safe_respond(interaction, "🎨 **Select an icon for your custom role:**", view=view, ephemeral=True)
+        await interaction.followup.send("🎨 **Select an icon for your custom role:**", view=view, ephemeral=True)
 
     @discord.ui.button(label="👁️ Preview", style=discord.ButtonStyle.secondary, custom_id="cr_preview")
     async def preview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         existing = await get_custom_role(interaction.user.id)
         if not existing:
-            return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
+            return await interaction.followup.send("❌ You don't have a custom role.", ephemeral=True)
         role = interaction.guild.get_role(existing)
         if not role:
-            return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
+            return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
 
         embed = discord.Embed(
             title="👁️ Role Preview",
@@ -870,22 +885,27 @@ class CustomRolePanelView(discord.ui.View):
         )
         embed.add_field(name="Color", value=f"`#{role.color.value:06x}`", inline=False)
         embed.set_footer(text="This is how your role will appear.")
-        await safe_respond(interaction, embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🗑️ Delete", style=discord.ButtonStyle.danger, custom_id="cr_delete")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
-            return await safe_respond(interaction, "❌ You are not eligible.", ephemeral=True)
+            return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
+
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         existing = await get_custom_role(interaction.user.id)
         if not existing:
-            return await safe_respond(interaction, "❌ You don't have a custom role.", ephemeral=True)
+            return await interaction.followup.send("❌ You don't have a custom role.", ephemeral=True)
         role = interaction.guild.get_role(existing)
         if not role:
-            return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
+            return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
 
         confirm_view = ConfirmDeleteView(role.id, interaction.user.id)
-        await safe_respond(
-            interaction,
+        await interaction.followup.send(
             "⚠️ Are you sure you want to delete your custom role? This action cannot be undone.",
             view=confirm_view,
             ephemeral=True,

@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Import shared functions from bot.py
 from bot import (
@@ -135,6 +135,11 @@ class TicketControlView(discord.ui.View):
                 ephemeral=True
             )
 
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         # Check if ticket is already claimed
         result = await d1_query(
             "SELECT claimed_by FROM tickets WHERE ticket_id = ?",
@@ -142,12 +147,10 @@ class TicketControlView(discord.ui.View):
         )
 
         if result["results"] and result["results"][0]["claimed_by"]:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 f"❌ This ticket has already been claimed by <@{result['results'][0]['claimed_by']}>.",
                 ephemeral=True
             )
-
-        await interaction.response.defer(ephemeral=True)
 
         # Update ticket
         await d1_query(
@@ -448,21 +451,11 @@ class TicketPanelView(discord.ui.View):
 
 
 async def handle_ticket_creation(interaction: discord.Interaction, ticket_type: str):
-    """Handle ticket creation with modal"""
-    # Check if user already has an open ticket
-    existing = await d1_query(
-        "SELECT ticket_id FROM tickets WHERE user_id = ? AND status = 'open'",
-        [str(interaction.user.id)]
-    )
-
-    if existing["results"]:
-        return await interaction.response.send_message(
-            "❌ You already have an open ticket! Please close your existing ticket before creating a new one.",
-            ephemeral=True
-        )
-
-    # Show the modal
-    await interaction.response.send_modal(TicketModal(ticket_type))
+    """Handle ticket creation with modal — open modal immediately; duplicate check is inside on_submit."""
+    try:
+        await interaction.response.send_modal(TicketModal(ticket_type))
+    except discord.NotFound:
+        return
 
 
 # ── Ticket Cog ──────────────────────────────────────────────────────────────

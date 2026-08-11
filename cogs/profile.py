@@ -91,6 +91,31 @@ def _total_xp_for_level(level: int) -> int:
 # ── Fonts ──────────────────────────────────────────────────────────────────────
 _font_cache: dict = {}
 
+def _fc_list_font(style: str) -> "str | None":
+    """Ask fc-list for the first available sans-serif font of the given style."""
+    try:
+        import subprocess
+        for family in ("Liberation Sans", "DejaVu Sans", "Noto Sans", "Ubuntu", "FreeSans"):
+            res = subprocess.run(
+                ["fc-list", f":family={family}:style={style}", "--format=%{file}\n"],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in res.stdout.strip().splitlines():
+                p = line.strip()
+                if p.endswith((".ttf", ".otf")) and os.path.exists(p):
+                    return p
+    except Exception:
+        pass
+    return None
+
+# Run fc-list once at module load so the result is cached.
+_FC_BOLD    = _fc_list_font("Bold")
+_FC_REGULAR = _fc_list_font("Regular")
+if _FC_BOLD:
+    print(f"[Profile] fc-list bold font: {_FC_BOLD}")
+if _FC_REGULAR:
+    print(f"[Profile] fc-list regular font: {_FC_REGULAR}")
+
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     key = (size, bold)
     if key in _font_cache:
@@ -99,24 +124,50 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     candidates = (
         [
             os.path.join(_base, "fonts", "bold.ttf"),
-            os.path.join(_base, "fonts", "regular.ttf"),
+            # Windows
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/calibrib.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            # Linux - Liberation (multiple paths across distros)
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+            # Linux - DejaVu
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+            # Linux - Noto
             "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-        ] if bold else [
+            "/usr/share/fonts/noto/NotoSans-Bold.ttf",
+            "/usr/share/fonts/noto-cjk/NotoSans-Bold.ttf",
+            # Linux - Ubuntu
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+            "/usr/share/fonts/truetype/ubuntu-font-family/Ubuntu-B.ttf",
+            # macOS
+            "/Library/Fonts/Arial Bold.ttf",
+        ] + ([_FC_BOLD] if _FC_BOLD else []) if bold else [
             os.path.join(_base, "fonts", "regular.ttf"),
+            # Windows
             "C:/Windows/Fonts/arial.ttf",
             "C:/Windows/Fonts/calibri.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            # Linux - Liberation
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+            # Linux - DejaVu
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            # Linux - Noto
             "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        ]
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+            # Linux - Ubuntu
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+            "/usr/share/fonts/truetype/ubuntu-font-family/Ubuntu-R.ttf",
+            # macOS
+            "/Library/Fonts/Arial.ttf",
+        ] + ([_FC_REGULAR] if _FC_REGULAR else [])
     )
     f = None
     for path in candidates:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             try:
                 f = ImageFont.truetype(path, size)
                 break

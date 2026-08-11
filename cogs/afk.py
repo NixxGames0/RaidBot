@@ -105,14 +105,16 @@ class AFK(commands.Cog):
         user = interaction.user
         guild = interaction.guild
 
+        await interaction.response.defer(ephemeral=True)
+
         # Check if already AFK
         afk_data = await get_afk(user.id)
         if afk_data:
             await set_afk(user.id, note or "", afk_data["original_nick"])
             # Try to update nickname again (in case permissions changed)
             await self._set_afk_nickname(user, afk_data["original_nick"])
-            await interaction.response.send_message(
-                f"✅ Updated your AFK status. You are still marked as AFK.",
+            await interaction.followup.send(
+                "✅ Updated your AFK status. You are still marked as AFK.",
                 ephemeral=True
             )
             return
@@ -134,7 +136,7 @@ class AFK(commands.Cog):
                 inline=False
             )
         embed.set_footer(text="Type a message to return.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
         # If nickname wasn't updated, also DM the user a warning
         if not nickname_updated:
@@ -208,11 +210,12 @@ class AFK(commands.Cog):
     @app_commands.command(name="afklist", description="List all users currently AFK")
     @app_commands.checks.cooldown(1, 10)
     async def afklist(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         result = await d1_query(
             "SELECT user_id, note, start_time FROM afk ORDER BY start_time"
         )
         if not result["results"]:
-            return await interaction.response.send_message("📭 No one is currently AFK.", ephemeral=True)
+            return await interaction.followup.send("📭 No one is currently AFK.", ephemeral=True)
 
         embed = discord.Embed(
             title="😴 Currently AFK",
@@ -231,7 +234,7 @@ class AFK(commands.Cog):
                 value=f"📝 {note}\n⏰ {duration}",
                 inline=False
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ─── Event listeners ──────────────────────────────────
     @commands.Cog.listener()

@@ -2,5 +2,5 @@ services:
   - type: worker
     name: RaidBot
     env: python
-    buildCommand: apt-get update && apt-get install -y fonts-liberation && pip install -r requirements.txt
+    buildCommand: apt-get update && apt-get install -y fonts-liberation fonts-dejavu-core fonts-noto-core && fc-cache -fv && pip install -r requirements.txt
     startCommand: python bot.py

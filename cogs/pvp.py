@@ -1755,6 +1755,7 @@ class PvPPanelView(discord.ui.View):
 
         guild_id = interaction.guild_id
 
+        # All in-memory checks are synchronous — safe before defer
         if not is_linked(interaction.user):
             return await interaction.response.send_message(
                 "❌ Link your Roblox account to play PvP.", ephemeral=True)
@@ -1766,11 +1767,17 @@ class PvPPanelView(discord.ui.View):
             return await interaction.response.send_message(
                 "❌ You are already in the queue. Use `/pvpleave` to exit.", ephemeral=True)
 
+        # Defer before the D1 query to avoid 10062 on cold-start
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         err = await cog._check_queue_timeout(interaction.user.id)
         if err:
-            return await interaction.response.send_message(err, ephemeral=True)
+            return await interaction.followup.send(err, ephemeral=True)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=discord.Embed(
                 title="⚔️ Select Match Type",
                 description=(
@@ -1802,12 +1809,18 @@ class MatchTypeView(discord.ui.View):
         if not cog:
             return await interaction.response.send_message("❌ PvP offline.", ephemeral=True)
 
+        # Defer before D1 query to stay within the 3-second response window
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
         row = await d1_query(
             "SELECT pvp_elo, pvp_trust, pvp_placement_done, pvp_banned FROM users WHERE discord_id = ?",
             [str(interaction.user.id)]
         )
         if not row["results"]:
-            return await interaction.response.send_message("❌ You haven't verified yet.", ephemeral=True)
+            return await interaction.followup.send("❌ You haven't verified yet.", ephemeral=True)
 
         data    = row["results"][0]
         elo     = data.get("pvp_elo")            or BASE_ELO
@@ -1816,14 +1829,14 @@ class MatchTypeView(discord.ui.View):
         banned  = bool(data.get("pvp_banned"))
 
         if banned:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "❌ You are suspended from PvP.", ephemeral=True)
 
         await cog._queue_add(self.guild_id, interaction.user.id, match_type, elo, trust)
 
         queue_size = len(pvp_queue.get(self.guild_id, {}))
         join_ts    = int(datetime.now(timezone.utc).timestamp())
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=discord.Embed(
                 title=f"✅ Entered {match_type.capitalize()} Queue",
                 description=(
