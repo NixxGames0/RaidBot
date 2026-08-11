@@ -23,7 +23,7 @@ GIVEAWAY_PINGS_CHANCE= 0.60
 DELAY_MIN            = 30
 DELAY_MAX            = 120
 
-# ── Fallback realistic name generation (if API fails) ────────────────────
+# ── Fallback name generation ────────────────────────────────────────────
 FIRST_NAMES = ["Alex", "Max", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley",
                "Avery", "Quinn", "Skyler", "Parker", "Logan", "Reese", "Dakota", "Emerson",
                "Nova", "Kai", "Zara", "Milo", "Luna", "Felix", "Iris", "Leo", "Maya", "Ezra"]
@@ -44,9 +44,8 @@ def generate_fallback_roblox_name():
             base += str(random.randint(1, 99))
     return name.replace(" ", "").strip()[:20]
 
-# ── Roblox API helper (synchronous) ──────────────────────────────────────
+# ── Roblox API helper ────────────────────────────────────────────────────
 def get_roblox_user_sync(user_id: int):
-    """Fetch a Roblox user by ID (synchronous). Returns (name, id) or (None, None)."""
     try:
         resp = requests.get(
             f"https://users.roblox.com/v1/users/{user_id}",
@@ -60,23 +59,17 @@ def get_roblox_user_sync(user_id: int):
     return None, None
 
 async def get_random_real_roblox_user(max_attempts: int = 10):
-    """
-    Tries up to `max_attempts` random user IDs, returns the first valid Roblox
-    user (name, id). If none found, returns (None, None).
-    """
     loop = asyncio.get_event_loop()
     for _ in range(max_attempts):
-        user_id = random.randint(1000000, 900000000)  # realistic range
+        user_id = random.randint(1000000, 900000000)
         name, uid = await loop.run_in_executor(None, partial(get_roblox_user_sync, user_id))
         if name and uid:
             return name, uid
-        # Small delay to avoid hammering the API
         await asyncio.sleep(0.5)
     return None, None
 
-# ── Database key for completion ───────────────────────────────────────────
+# ── Database key for completion ─────────────────────────────────────────
 COMPLETED_KEY = "verifyrandom_completed"
-
 
 class VerifyRandom(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -86,7 +79,6 @@ class VerifyRandom(commands.Cog):
         self.bot.loop.create_task(self._startup_verification())
 
     async def _startup_verification(self):
-        """Run once on startup if not already completed."""
         await self.bot.wait_until_ready()
 
         completed = await d1_query(
@@ -156,14 +148,12 @@ class VerifyRandom(commands.Cog):
 
     async def _verify_one(self, member: discord.Member, guild: discord.Guild) -> bool:
         try:
-            # ── Get a real Roblox account from the API ──────────────────
+            # ── Get real Roblox account ──────────────────────────────────
             roblox_name = None
             roblox_id = None
 
-            # Attempt to fetch a real user; fallback to generated if none found
             real_name, real_id = await get_random_real_roblox_user(max_attempts=10)
             if real_name and real_id:
-                # Check that this username isn't already linked to another Discord user
                 check = await d1_query(
                     "SELECT discord_id FROM users WHERE roblox_users LIKE ?",
                     [f'%"{real_name}"%']
@@ -172,11 +162,9 @@ class VerifyRandom(commands.Cog):
                     roblox_name = real_name
                     roblox_id = real_id
                 else:
-                    # If taken, we'll generate a fallback (or try again, but we'll just fallback)
                     print(f"⚠️ Real Roblox user {real_name} already linked. Using fallback.")
 
             if not roblox_name:
-                # Fallback to a realistic generated username
                 while True:
                     generated = generate_fallback_roblox_name()
                     check = await d1_query(
@@ -190,7 +178,7 @@ class VerifyRandom(commands.Cog):
 
             now_str = datetime.now(timezone.utc).isoformat()
 
-            # ── Create/update user record ──────────────────────────────
+            # ── Database ──────────────────────────────────────────────────
             existing = await d1_query(
                 "SELECT discord_id, roblox_users FROM users WHERE discord_id = ?",
                 [str(member.id)]
@@ -234,7 +222,7 @@ class VerifyRandom(commands.Cog):
                 if giveaway_role and giveaway_role not in member.roles:
                     await member.add_roles(giveaway_role, reason="Giveaway Pings")
 
-            # ── Random verification method ────────────────────────────────
+            # ── Verification method ──────────────────────────────────────
             method = random.choice(["Bio Code", "Join Game"])
             if method == "Bio Code":
                 log_title = "🔗 Account Linked"
@@ -257,13 +245,12 @@ class VerifyRandom(commands.Cog):
             log_embed.add_field(name="Roblox Username", value=f"`{roblox_name}`", inline=True)
             log_embed.add_field(name="Roblox ID", value=f"`{roblox_id}`", inline=True)
             log_embed.add_field(name="Verification Method", value=method_display, inline=True)
-            log_embed.add_field(name="Spent >200 Robux", value="✅ Yes", inline=True)
             if is_new_user:
                 log_embed.add_field(name="New User", value="✅ Yes", inline=True)
             log_embed.set_footer(text=f"User ID: {member.id}")
             await send_verification_log(self.bot, log_embed)
 
-            # ── Main log (public log channel) ─────────────────────────────
+            # ── Main log (public channel) ─────────────────────────────────
             main_embed = discord.Embed(
                 title=main_title,
                 description=main_desc,
@@ -271,7 +258,6 @@ class VerifyRandom(commands.Cog):
                 timestamp=datetime.now(timezone.utc)
             )
             main_embed.add_field(name="Roblox", value=f"`{roblox_name}`", inline=True)
-            main_embed.add_field(name="Spent >200 Robux", value="✅ Yes", inline=True)
             await send_log(self.bot, main_embed)
 
             return True
