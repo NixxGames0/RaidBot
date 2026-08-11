@@ -69,44 +69,41 @@ load_icons()
 _DEFAULT_ICON_COLOR = (153, 170, 181)  # Discord "greyple"
 
 
-def _extract_role_colors(role: discord.Role):
+async def fetch_raw_role_colors(guild: discord.Guild) -> dict:
     """
-    Returns (primary_rgb, secondary_rgb | None).
+    Make one REST call to GET /guilds/{id}/roles and return a mapping of
+    {role_id: (primary_rgb, secondary_rgb | None)}.
 
-    Reads Discord's native gradient role colours from the raw API payload
-    (the ``color_gradient`` field).  Falls back gracefully to the single
-    ``role.color`` value or a neutral grey when the role has no colour.
+    discord.py's Role class discards the ``color_gradient`` field during
+    __init__, so we must go to the raw API payload to detect gradients.
     """
     def to_rgb(v: int):
         return (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
 
-    # 1. discord.py may expose gradient natively in future versions
-    for attr in ("color_gradient", "colour_gradient"):
-        grad = getattr(role, attr, None)
+    try:
+        raw_roles = await guild._state.http.get_roles(guild.id)
+    except Exception as e:
+        logger.warning(f"Could not fetch raw role data for gradient detection: {e}")
+        return {}
+
+    out: dict = {}
+    for rd in raw_roles:
+        rid = int(rd.get("id", 0))
+
+        grad = rd.get("color_gradient")
         if isinstance(grad, dict):
-            colors = grad.get("colors") or grad.get("colour") or []
-            if len(colors) >= 2 and colors[1] is not None:
-                return to_rgb(int(colors[0])), to_rgb(int(colors[1]))
-            if colors and colors[0] is not None:
-                return to_rgb(int(colors[0])), None
+            colors = [c for c in (grad.get("colors") or []) if c]
+            if len(colors) >= 2:
+                out[rid] = to_rgb(colors[0]), to_rgb(colors[1])
+                continue
+            if colors:
+                out[rid] = to_rgb(colors[0]), None
+                continue
 
-    # 2. Inspect the raw internal dict that discord.py stores on the object
-    raw = getattr(role, "_data", None) or {}
-    if isinstance(raw, dict):
-        grad = raw.get("color_gradient")
-        if isinstance(grad, dict):
-            colors = grad.get("colors") or []
-            if len(colors) >= 2 and colors[1] is not None:
-                return to_rgb(int(colors[0])), to_rgb(int(colors[1]))
-            if colors and colors[0] is not None:
-                return to_rgb(int(colors[0])), None
+        val = rd.get("color", 0)
+        out[rid] = (to_rgb(val) if val else _DEFAULT_ICON_COLOR, None)
 
-    # 3. Plain single colour
-    if role.color.value != 0:
-        return to_rgb(role.color.value), None
-
-    # 4. No colour at all — use neutral fallback
-    return _DEFAULT_ICON_COLOR, None
+    return out
 
 
 def generate_gradient_image(base_path: Path, primary_rgb, secondary_rgb=None) -> bytes:
@@ -217,26 +214,23 @@ async def store_emoji_id(basename: str, emoji_id: int):
 async def ensure_role_emoji(
     guild: discord.Guild,
     basename: str,
-    color: discord.Color = None,
-    role: discord.Role = None,
+    primary_rgb: tuple = None,
+    secondary_rgb: tuple = None,
     role_id: int = None,
     force: bool = False,
 ) -> discord.Emoji:
     """
     Create or reuse a gradient guild emoji for a role.
 
-    Pass ``role`` so gradient colours are auto-detected from the raw API
-    payload.  Pass ``color`` as a fallback when only a plain colour is known
-    (e.g. during custom-role creation before the Discord Role object exists).
-    Set ``force=True`` (used by /syncemojis) to delete and regenerate the
-    emoji so gradient changes are always reflected.
+    primary_rgb / secondary_rgb are pre-resolved (r, g, b) tuples from
+    fetch_raw_role_colors().  Set force=True to delete and regenerate so
+    gradient changes are always reflected (used by /syncemojis).
     """
     basename = basename.lower()
     if basename not in AVAILABLE_ICONS:
         raise ValueError(f"Icon '{basename}' not found.")
 
     emoji_name = f"role_{basename}"
-
     existing = discord.utils.get(guild.emojis, name=emoji_name)
 
     if existing and not force:
@@ -261,27 +255,21 @@ async def ensure_role_emoji(
                 return cached
             await store_emoji_id(basename, None)
 
-    # Determine colours
-    if role is not None:
-        primary, secondary = _extract_role_colors(role)
-    elif color is not None and color.value != 0:
-        primary = (color.r, color.g, color.b)
-        secondary = None
-    else:
-        primary = _DEFAULT_ICON_COLOR
-        secondary = None
+    if primary_rgb is None:
+        primary_rgb = _DEFAULT_ICON_COLOR
 
     try:
-        image_data = generate_gradient_image(AVAILABLE_ICONS[basename], primary, secondary)
+        image_data = generate_gradient_image(AVAILABLE_ICONS[basename], primary_rgb, secondary_rgb)
     except Exception as e:
         raise RuntimeError(f"Failed to generate image: {e}")
 
-    color_desc = f"#{role.color.value:06x}" if role else (f"#{color.value:06x}" if color else "default")
+    def rgb_hex(t): return f"#{(t[0] << 16 | t[1] << 8 | t[2]):06x}"
+    color_desc = rgb_hex(primary_rgb) + (f" → {rgb_hex(secondary_rgb)}" if secondary_rgb else "")
     try:
         emoji = await guild.create_custom_emoji(
             name=emoji_name,
             image=image_data,
-            reason=f"Generated emoji for role colour {color_desc}",
+            reason=f"Generated emoji ({color_desc})",
         )
         logger.info(f"✅ Uploaded emoji '{emoji_name}' ({color_desc})")
         await store_emoji_id(basename, emoji.id)
@@ -296,6 +284,9 @@ async def ensure_role_emoji(
 
 # ─── Sync built‑in roles ──────────────────────────────────
 async def sync_all_role_emojis(guild: discord.Guild):
+    # One REST call to get gradient data for every role at once
+    raw_colors = await fetch_raw_role_colors(guild)
+
     results = []
     for basename, role_id in ROLE_ICON_MAP.items():
         try:
@@ -307,10 +298,27 @@ async def sync_all_role_emojis(guild: discord.Guild):
                 results.append(f"❌ `{basename}` – white icon missing")
                 continue
 
-            emoji = await ensure_role_emoji(guild, basename, role=role, role_id=role_id, force=True)
-            primary, secondary = _extract_role_colors(role)
-            color_info = f"#{role.color.value:06x}" + (" + gradient" if secondary else "")
-            results.append(f"✅ `{basename}` → {emoji} (colour {color_info})")
+            primary, secondary = raw_colors.get(role_id, (_DEFAULT_ICON_COLOR, None))
+            img_bytes = generate_gradient_image(AVAILABLE_ICONS[basename], primary, secondary)
+
+            # Apply as native role icon (requires Level 2+)
+            icon_note = ""
+            try:
+                await role.edit(display_icon=img_bytes)
+                icon_note = " 🖼️"
+            except (discord.Forbidden, discord.HTTPException):
+                icon_note = ""
+
+            # Always (re)generate the guild emoji for use in embeds/messages
+            emoji = await ensure_role_emoji(
+                guild, basename,
+                primary_rgb=primary, secondary_rgb=secondary,
+                role_id=role_id, force=True,
+            )
+
+            def rgb_hex(t): return f"#{(t[0] << 16 | t[1] << 8 | t[2]):06x}"
+            color_info = rgb_hex(primary) + (f" → {rgb_hex(secondary)}" if secondary else "")
+            results.append(f"✅ `{basename}` → {emoji}{icon_note} ({color_info})")
 
             await asyncio.sleep(0.5)
 
@@ -338,16 +346,55 @@ async def apply_icon_to_role(guild: discord.Guild, role: discord.Role, icon_name
     if icon_name not in AVAILABLE_ICONS:
         return f"❌ Icon `{icon_name}` not found."
     try:
-        primary, secondary = _extract_role_colors(role)
+        raw_colors = await fetch_raw_role_colors(guild)
+        colors = raw_colors.get(role.id)
+        if colors:
+            primary, secondary = colors
+        else:
+            primary = (role.color.r, role.color.g, role.color.b) if role.color.value else _DEFAULT_ICON_COLOR
+            secondary = None
+
         img_bytes = generate_gradient_image(AVAILABLE_ICONS[icon_name], primary, secondary)
         try:
             await role.edit(display_icon=img_bytes)
             return f"✅ Native icon **{icon_name}** applied to {role.mention}."
         except (discord.Forbidden, discord.HTTPException):
-            emoji = await ensure_role_emoji(guild, icon_name, role=role, role_id=role.id, force=True)
+            emoji = await ensure_role_emoji(
+                guild, icon_name,
+                primary_rgb=primary, secondary_rgb=secondary,
+                role_id=role.id, force=True,
+            )
             return f"✅ Emoji {emoji} applied to {role.mention} (server not Level 2)."
     except Exception as e:
         return f"❌ Failed to apply icon: {e}"
+
+
+# ─── Role colour helpers ──────────────────────────────────
+async def apply_role_colors(
+    guild: discord.Guild,
+    role: discord.Role,
+    color1: discord.Color,
+    color2: discord.Color = None,
+    angle: int = 90,
+):
+    """
+    Set a solid colour OR a two-stop gradient on a Discord role.
+    Uses raw REST because discord.py's role.edit() doesn't expose color_gradient.
+    angle=90 gives a left-to-right gradient.
+    """
+    from discord.http import Route
+    route = Route(
+        "PATCH", "/guilds/{guild_id}/roles/{role_id}",
+        guild_id=guild.id, role_id=role.id,
+    )
+    if color2 is not None:
+        payload = {
+            "color": 0,
+            "color_gradient": {"colors": [color1.value, color2.value], "angle": angle},
+        }
+    else:
+        payload = {"color": color1.value, "color_gradient": None}
+    await guild._state.http.request(route, json=payload)
 
 
 # ─── Helper to safely respond ─────────────────────────────
@@ -418,11 +465,6 @@ class IconPickerView(discord.ui.View):
         apply_msg = ""
         if self.target_role:
             apply_msg = "\n" + await apply_icon_to_role(self.guild, self.target_role, chosen)
-        elif self.builder_view:
-            # No live role yet (create mode) — store colours for when the role is created
-            c = self.role_color
-            primary = (c.r, c.g, c.b) if c.value != 0 else _DEFAULT_ICON_COLOR
-            self.builder_view.data["icon_rgb"] = (primary, None)
 
         # Sync all built-in role icons in background
         asyncio.create_task(_sync_all_icons_bg(self.guild))
@@ -454,27 +496,35 @@ class RoleBuilderView(discord.ui.View):
         self.data = {
             "name": "",
             "color": discord.Color.blurple(),
+            "color2": None,   # second gradient stop; None = solid colour
             "icon": None,
         }
         if existing_data:
             self.data["name"] = existing_data.get("name", "")
             self.data["color"] = existing_data.get("color", discord.Color.blurple())
+            self.data["color2"] = existing_data.get("color2")
             self.data["icon"] = existing_data.get("icon")
 
     def build_embed(self) -> discord.Embed:
+        color2 = self.data.get("color2")
+        if color2:
+            color_val = f"`#{self.data['color'].value:06x}` → `#{color2.value:06x}`"
+        else:
+            color_val = f"`#{self.data['color'].value:06x}`"
+
         embed = discord.Embed(
             title="🎨 Custom Role Builder",
             description=(
                 "**Mode:** " + ("Creating" if self.mode == "create" else "Editing") + " your custom role.\n"
                 "Use the buttons below to change each field, then click **Apply Changes** to save.\n\n"
-                "**Note:** Role icons require the server to be Level 2+.\n"
-                "Gradient emojis for built‑in roles are automatically generated."
+                "**Color:** Enter `#hex` for solid, or `#hex, #hex` for a gradient.\n"
+                "**Note:** Role icons require the server to be Level 2+."
             ),
             color=self.data["color"],
             timestamp=datetime.now(timezone.utc),
         )
         embed.add_field(name="Name", value=self.data["name"] or "*(not set)*", inline=True)
-        embed.add_field(name="Color", value=f"`#{self.data['color'].value:06x}`", inline=True)
+        embed.add_field(name="Color", value=color_val, inline=True)
         if self.data.get("icon"):
             embed.add_field(name="Icon", value=f"`{self.data['icon']}`", inline=True)
         embed.set_footer(text="Changes are not applied until you click 'Apply'.")
@@ -572,6 +622,12 @@ class RoleBuilderView(discord.ui.View):
                 await interaction.user.add_roles(role)
                 await create_custom_role_entry(interaction.user.id, role.id)
 
+                # Apply gradient or solid colour (raw PATCH handles both)
+                try:
+                    await apply_role_colors(guild, role, self.data["color"], self.data.get("color2"))
+                except Exception as e:
+                    logger.warning(f"Could not apply role colour: {e}")
+
                 # Apply icon if one was chosen
                 icon_msg = ""
                 if self.data.get("icon") and self.data["icon"] in AVAILABLE_ICONS:
@@ -605,7 +661,9 @@ class RoleBuilderView(discord.ui.View):
                 if not role:
                     return await interaction.followup.send("❌ Your custom role no longer exists.", ephemeral=True)
 
-                await role.edit(name=self.data["name"], color=self.data["color"])
+                # Rename (colour handled separately so gradient is preserved)
+                await role.edit(name=self.data["name"])
+                await apply_role_colors(guild, role, self.data["color"], self.data.get("color2"))
 
                 # Apply icon if one was chosen
                 icon_msg = ""
@@ -668,25 +726,36 @@ class ColorModal(discord.ui.Modal, title="Change Role Color"):
     def __init__(self, view: RoleBuilderView):
         super().__init__()
         self.view = view
+
+        default = f"#{view.data['color'].value:06x}"
+        if view.data.get("color2"):
+            default += f", #{view.data['color2'].value:06x}"
+
         self.color_input = discord.ui.TextInput(
-            label="Hex Color",
-            placeholder="#5865F2",
-            required=False,
-            max_length=7,
-            default=f"#{view.data['color'].value:06x}",
+            label="Color — solid or gradient",
+            placeholder="#5865F2  or  #ff0000, #0000ff",
+            required=True,
+            max_length=17,   # "#xxxxxx, #xxxxxx"
+            default=default,
         )
         self.add_item(self.color_input)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        color_hex = self.color_input.value.strip()
+    @staticmethod
+    def _parse_hex(raw: str):
+        raw = raw.strip().lstrip("#")
         try:
-            if color_hex.startswith("#"):
-                color_hex = color_hex[1:]
-            color_int = int(color_hex, 16)
-            color = discord.Color(color_int)
+            return discord.Color(int(raw, 16))
         except ValueError:
-            color = discord.Color.blurple()
-        self.view.data["color"] = color
+            return None
+
+    async def on_submit(self, interaction: discord.Interaction):
+        parts = [p.strip() for p in self.color_input.value.split(",")]
+        color1 = self._parse_hex(parts[0]) if parts else None
+        color2 = self._parse_hex(parts[1]) if len(parts) > 1 else None
+
+        if color1 is not None:
+            self.view.data["color"] = color1
+            self.view.data["color2"] = color2   # None clears any existing gradient
         await self.view.update_embed(interaction)
 
 
@@ -707,7 +776,17 @@ class CustomRolePanelView(discord.ui.View):
             role = interaction.guild.get_role(existing)
             if not role:
                 return await safe_respond(interaction, "❌ Your custom role no longer exists.", ephemeral=True)
-            existing_data = {"name": role.name, "color": role.color}
+            # Try to load existing gradient colour from the API
+            color2 = None
+            try:
+                raw = await fetch_raw_role_colors(interaction.guild)
+                colors = raw.get(role.id)
+                if colors and colors[1]:
+                    r, g, b = colors[1]
+                    color2 = discord.Color((r << 16) | (g << 8) | b)
+            except Exception:
+                pass
+            existing_data = {"name": role.name, "color": role.color, "color2": color2}
         else:
             existing_data = None
 
