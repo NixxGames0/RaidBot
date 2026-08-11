@@ -57,6 +57,19 @@ def _pvp_rank_colors(rank_name: str) -> tuple[tuple, tuple]:
     return (75, 85, 99), (55, 65, 81)
 
 _RANKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ranks')
+_ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'icons')
+
+def _load_role_icon(role_name: str) -> "Image.Image | None":
+    name = role_name.lower().replace(" ", "")
+    path = os.path.join(_ICONS_DIR, f"{name}.png")
+    if os.path.exists(path):
+        try:
+            img = Image.open(path)
+            img.load()
+            return img.convert("RGBA")
+        except Exception:
+            pass
+    return None
 
 def _load_rank_icon(rank_name: str) -> "Image.Image | None":
     name = rank_name.lower()
@@ -312,6 +325,8 @@ async def _build_card(
         role_icon: Image.Image | None = None
         if top_role.icon:
             role_icon = await _fetch_image(session, str(top_role.icon.url), timeout=4)
+        if role_icon is None:
+            role_icon = _load_role_icon(top_role.name)
 
         role_color = (
             (top_role.color.r, top_role.color.g, top_role.color.b)
