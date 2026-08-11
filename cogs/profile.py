@@ -118,7 +118,8 @@ AV_SIZE     = 140
 AV_X, AV_Y = 18, (H - AV_SIZE) // 2
 
 # Font sizes — intentionally large so they're legible in Discord
-SZ_NAME  = 38   # username + role
+SZ_NAME  = 38   # username
+SZ_ROLE  = 28   # role name (slightly smaller than username)
 SZ_SUB   = 18   # sub-line
 SZ_LABEL = 15   # stat column labels
 SZ_VAL   = 28   # stat values
@@ -160,6 +161,24 @@ def _apply_alpha(img: Image.Image, opacity: float) -> Image.Image:
     r, g, b, a = img.split()
     a = a.point(lambda x: int(x * opacity))
     return Image.merge("RGBA", (r, g, b, a))
+
+
+def _gradient_text(card: Image.Image, xy: tuple, text: str, font,
+                   gradient_src: Image.Image) -> None:
+    """Fill text with pixels stretched from gradient_src (matches icon colors exactly)."""
+    bbox = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(xy, text, font=font)
+    x, y, x2, y2 = bbox
+    w, h = max(1, x2 - x), max(1, y2 - y)
+
+    mask = Image.new("L", card.size, 0)
+    ImageDraw.Draw(mask).text(xy, text, font=font, fill=255)
+
+    grad = gradient_src.convert("RGB").resize((w, h), Image.LANCZOS).convert("RGBA")
+
+    layer = Image.new("RGBA", card.size, (0, 0, 0, 0))
+    layer.paste(grad, (x, y))
+
+    card.paste(layer, mask=mask)
 
 
 def _draw_placement_ring(
@@ -247,9 +266,10 @@ async def _build_card(
             (top_role.color.r, top_role.color.g, top_role.color.b)
             if top_role.color.value else MUTED
         )
-        ICON_SZ = SZ_NAME - 4   # 34px — matches name cap height
+        fn_role = _font(SZ_ROLE, bold=True)
+        ICON_SZ = SZ_ROLE          # icon matches role text height
         icon_x  = CX + name_w + 14
-        icon_y  = 12 + 4
+        icon_y  = 12 + (SZ_NAME - SZ_ROLE) // 2  # vertically centre with name
 
         if role_icon:
             ri = role_icon.resize((ICON_SZ, ICON_SZ), Image.LANCZOS)
@@ -260,7 +280,12 @@ async def _build_card(
                 fill=(*role_color, 255),
             )
 
-        d.text((icon_x + ICON_SZ + 10, 12), top_role.name[:16], font=fn_name, fill=role_color)
+        role_x = icon_x + ICON_SZ + 10
+        role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
+        if role_icon:
+            _gradient_text(card, (role_x, role_y), top_role.name[:16], fn_role, role_icon)
+        else:
+            d.text((role_x, role_y), top_role.name[:16], font=fn_role, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
