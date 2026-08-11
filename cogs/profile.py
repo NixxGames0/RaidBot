@@ -164,16 +164,30 @@ def _apply_alpha(img: Image.Image, opacity: float) -> Image.Image:
 
 
 def _gradient_text(card: Image.Image, xy: tuple, text: str, font,
-                   gradient_src: Image.Image) -> None:
-    """Fill text with a horizontal gradient derived from the icon's color distribution."""
+                   gradient_src: Image.Image,
+                   fallback_color: tuple = (255, 255, 255)) -> None:
+    """Fill text with a horizontal gradient from icon colors (alpha-weighted, skips transparent)."""
     bbox = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox(xy, text, font=font)
     x, y, x2, y2 = bbox
     w, h = max(1, x2 - x), max(1, y2 - y)
 
-    # Squash icon to a 1-row strip — LANCZOS averages all vertical pixels,
-    # leaving just the horizontal color distribution as a smooth gradient.
-    strip = gradient_src.convert("RGB").resize((w, 1), Image.LANCZOS)
-    grad  = strip.resize((w, h), Image.NEAREST).convert("RGBA")
+    # Scale icon to text width, keep natural height for column sampling
+    icon = gradient_src.convert("RGBA").resize((w, max(1, gradient_src.height)), Image.LANCZOS)
+    iw, ih = icon.size
+    px   = icon.load()
+
+    # Build a 1-row gradient: each column is the alpha-weighted average of that column's pixels.
+    # This ignores transparent pixels so they don't pull colors toward black.
+    row    = Image.new("RGB", (w, 1))
+    row_px = row.load()
+    for col in range(w):
+        rs = gs = bs = aw = 0
+        for row_i in range(ih):
+            r, g, b, a = px[col, row_i]
+            rs += r * a;  gs += g * a;  bs += b * a;  aw += a
+        row_px[col, 0] = (rs // aw, gs // aw, bs // aw) if aw else fallback_color
+
+    grad = row.resize((w, h), Image.NEAREST).convert("RGBA")
 
     mask = Image.new("L", card.size, 0)
     ImageDraw.Draw(mask).text(xy, text, font=font, fill=255)
@@ -303,7 +317,8 @@ async def _build_card(
         role_x = icon_x + ICON_SZ + 10
         role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
         if role_icon:
-            _gradient_text(card, (role_x, role_y), top_role.name[:16], fn_role, role_icon)
+            _gradient_text(card, (role_x, role_y), top_role.name[:16], fn_role,
+                           role_icon, fallback_color=role_color)
         else:
             d.text((role_x, role_y), top_role.name[:16], font=fn_role, fill=role_color)
 
