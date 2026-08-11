@@ -348,6 +348,13 @@ async def init_database():
             )"""
         )
 
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS pvp_ps_codes (
+                code        TEXT PRIMARY KEY,
+                match_id    TEXT
+            )"""
+        )
+
         # ─── Moderation table ─────────────────────────────────────────────────────
         await d1_query(
             """CREATE TABLE IF NOT EXISTS mod_actions (

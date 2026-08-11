@@ -91,8 +91,9 @@ def elo_change_bo3(
     lower-ranked = bigger loss.
     Post-placement casual matches return 0 delta for the non-placing player.
     """
-    w_in_elo = match_type == "ranked" or w_placement_left > 0
-    l_in_elo = match_type == "ranked" or l_placement_left > 0
+    # Casual matches have zero ELO and placement impact — ranked only
+    w_in_elo = match_type == "ranked"
+    l_in_elo = match_type == "ranked"
 
     w_result, l_result = SCORE_WEIGHTS.get(score, (1.0, 0.0))
     expected_w = 1 / (1 + 10 ** ((loser_elo - winner_elo) / 400))
@@ -163,6 +164,76 @@ async def _send_rank_change_dm(bot: commands.Bot, user_id: int, old_rank: str, n
         pass
 
 
+# ── Boosting / win-trade detection ────────────────────────────────────────────
+
+async def _check_boost_flag(p1_id: int, p2_id: int) -> str | None:
+    """
+    Returns a reason string if this pair looks suspicious, else None.
+    Checks:
+      1. Played each other 4+ times in the last 24 h.
+      2. Same player has lost to the same opponent 3+ times in the last 24 h.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+    pair_row = await d1_query(
+        """SELECT COUNT(*) AS n FROM pvp_matches
+           WHERE ((player1_id = ? AND player2_id = ?) OR (player1_id = ? AND player2_id = ?))
+           AND ended_at IS NOT NULL AND ended_at > ?""",
+        [str(p1_id), str(p2_id), str(p2_id), str(p1_id), cutoff],
+    )
+    pair_count = pair_row["results"][0]["n"] if pair_row["results"] else 0
+    if pair_count >= 4:
+        return f"Played each other {pair_count}x in 24 h"
+
+    for winner_id, loser_id in ((p1_id, p2_id), (p2_id, p1_id)):
+        loss_row = await d1_query(
+            """SELECT COUNT(*) AS n FROM pvp_matches
+               WHERE winner_id = ? AND (player1_id = ? OR player2_id = ?)
+               AND ended_at IS NOT NULL AND ended_at > ?""",
+            [str(winner_id), str(loser_id), str(loser_id), cutoff],
+        )
+        losses = loss_row["results"][0]["n"] if loss_row["results"] else 0
+        if losses >= 3:
+            return f"<@{loser_id}> lost to <@{winner_id}> {losses}x in 24 h"
+
+    return None
+
+
+async def _flag_boost(winner_id: int, loser_id: int, match_id: str, reason: str):
+    """Insert an auto-report for potential boosting."""
+    now = datetime.now(timezone.utc).isoformat()
+    await d1_query(
+        """INSERT INTO pvp_reports
+           (reporter_id, reported_id, match_id, reason, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        ["0", str(winner_id), match_id,
+         f"[AUTO BOOST FLAG] {reason}", now],
+    )
+
+
+# ── PS code pool ───────────────────────────────────────────────────────────────
+
+async def _claim_ps_code(match_id: str) -> str | None:
+    row = await d1_query(
+        "SELECT code FROM pvp_ps_codes WHERE match_id IS NULL LIMIT 1", []
+    )
+    if not row["results"]:
+        return None
+    code = row["results"][0]["code"]
+    await d1_query(
+        "UPDATE pvp_ps_codes SET match_id = ? WHERE code = ?",
+        [match_id, code],
+    )
+    return code
+
+
+async def _release_ps_code(match_id: str):
+    await d1_query(
+        "UPDATE pvp_ps_codes SET match_id = NULL WHERE match_id = ?",
+        [match_id],
+    )
+
+
 # ── Match result application ───────────────────────────────────────────────────
 
 async def _apply_match_result(
@@ -218,8 +289,9 @@ async def _apply_match_result(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    new_w_pleft = max(0, w_pleft - 1) if (match_type == "casual" and w_pleft > 0) else w_pleft
-    new_l_pleft = max(0, l_pleft - 1) if (match_type == "casual" and l_pleft > 0) else l_pleft
+    # Placement progress only advances in ranked matches
+    new_w_pleft = max(0, w_pleft - 1) if (match_type == "ranked" and w_pleft > 0) else w_pleft
+    new_l_pleft = max(0, l_pleft - 1) if (match_type == "ranked" and l_pleft > 0) else l_pleft
     new_w_pdone = 1 if (new_w_pleft == 0 or w_pdone) else 0
     new_l_pdone = 1 if (new_l_pleft == 0 or l_pdone) else 0
 
@@ -262,6 +334,7 @@ async def _apply_match_result(
         [str(winner_id), score, new_w_elo, new_l_elo, now, match_id]
     )
 
+    await _release_ps_code(match_id)
     pvp_active_matches.pop(match_id, None)
     pvp_pending_scores.pop(match_id, None)
 
@@ -297,7 +370,12 @@ async def _apply_match_result(
         embed.add_field(name="Rank Change", value="\n".join(rank_lines), inline=False)
 
     if not new_w_pdone:
-        embed.set_footer(text=f"Placement: {new_w_pleft} match(es) remaining for winner")
+        embed.set_footer(text=f"Placement: {new_w_pleft} ranked match(es) remaining for winner")
+
+    # Boost / win-trade check (fire-and-forget, never blocks the result)
+    boost_reason = await _check_boost_flag(winner_id, loser_id)
+    if boost_reason:
+        await _flag_boost(winner_id, loser_id, match_id, boost_reason)
 
     return embed
 
@@ -364,6 +442,7 @@ async def _apply_timeout_penalty(
         "UPDATE pvp_matches SET ended_at = ?, timeout_flag = 1 WHERE match_id = ?",
         [now, match_id]
     )
+    await _release_ps_code(match_id)
     pvp_active_matches.pop(match_id, None)
     pvp_pending_scores.pop(match_id, None)
     return note
@@ -832,7 +911,6 @@ async def _create_match_channel(
     p1_id: int,
     p2_id: int,
     match_type: str,
-    ps_code: str | None = None,
 ):
     guild = bot.get_guild(guild_id)
     if not guild:
@@ -864,6 +942,8 @@ async def _create_match_channel(
         print(f"[PvP] Failed to create match channel: {e}")
         return
 
+    ps_code = await _claim_ps_code(match_id)
+
     pvp_active_matches[match_id] = {
         "player1":      p1_id,
         "player2":      p2_id,
@@ -871,6 +951,7 @@ async def _create_match_channel(
         "channel_id":   channel.id,
         "started_at":   datetime.now(timezone.utc),
         "warned":       False,
+        "ps_code":      ps_code,
     }
 
     await d1_query(
@@ -888,7 +969,9 @@ async def _create_match_channel(
     embed.add_field(name="Player 1", value=p1.mention,              inline=True)
     embed.add_field(name="Player 2", value=p2.mention,              inline=True)
     if ps_code:
-        embed.add_field(name="PS Code", value=f"`{ps_code}`", inline=False)
+        embed.add_field(name="🎮 PS Code", value=f"`{ps_code}`", inline=False)
+    else:
+        embed.add_field(name="🎮 PS Code", value="No codes available — host manually.", inline=False)
     embed.set_footer(text="Use the score dropdown once the match ends.")
 
     await channel.send(
@@ -913,8 +996,13 @@ def _find_ranked_pairs(queue: dict[int, dict]) -> list[tuple[int, int]]:
         if uid1 not in remaining:
             continue
         d1 = queue[uid1]
-        wait       = (now - d1["joined_at"]).total_seconds()
-        elo_window = min(50 + int(wait / 30) * 25, 300)
+        wait = (now - d1["joined_at"]).total_seconds()
+        if wait >= 300:          # 5+ min: match anyone
+            elo_window = 9999
+        elif wait >= 120:        # 2–5 min: expand fast (+50 per 20 s)
+            elo_window = 200 + int((wait - 120) / 20) * 50
+        else:                    # < 2 min: tight window
+            elo_window = 75 + int(wait / 30) * 25
 
         best = None
         for uid2 in remaining:
@@ -1095,8 +1183,8 @@ class PvPCog(commands.Cog):
             title="⚔️ PvP Arena",
             description=(
                 "Challenge other players to ranked or casual matches!\n\n"
-                "**Ranked** — ELO-based matchmaking. Your rank updates after every match.\n"
-                "**Casual** — No ELO impact. Complete 10 placement matches first to unlock ranked.\n\n"
+                "**Ranked** — ELO-based. First 10 matches are placement (boosted ELO gains). Earns you a rank.\n"
+                "**Casual** — No ELO or placement impact. Pure fun.\n\n"
                 f"{queue_line}\n\n"
                 "Click **Start PvP** below to enter the queue."
             ),
@@ -1603,6 +1691,51 @@ class PvPCog(commands.Cog):
             f"✅ {user.mention}'s PvP suspension lifted.", ephemeral=True
         )
 
+    @app_commands.command(name="pvpaddcode", description="Add a PS code to the match pool (Staff only)")
+    @app_commands.describe(code="The Roblox private server code to add")
+    async def pvp_add_code(self, interaction: discord.Interaction, code: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        try:
+            await d1_query(
+                "INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)",
+                [code.strip()],
+            )
+            await interaction.response.send_message(
+                f"✅ PS code `{code.strip()}` added to the pool.", ephemeral=True
+            )
+        except Exception:
+            await interaction.response.send_message(
+                f"❌ That code already exists in the pool.", ephemeral=True
+            )
+
+    @app_commands.command(name="pvpremovecode", description="Remove a PS code from the pool (Staff only)")
+    @app_commands.describe(code="The Roblox private server code to remove")
+    async def pvp_remove_code(self, interaction: discord.Interaction, code: str):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        await d1_query(
+            "DELETE FROM pvp_ps_codes WHERE code = ?", [code.strip()]
+        )
+        await interaction.response.send_message(
+            f"✅ PS code `{code.strip()}` removed from the pool.", ephemeral=True
+        )
+
+    @app_commands.command(name="pvplistcodes", description="List all PS codes in the pool (Staff only)")
+    async def pvp_list_codes(self, interaction: discord.Interaction):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+        rows = await d1_query("SELECT code, match_id FROM pvp_ps_codes ORDER BY code", [])
+        if not rows["results"]:
+            return await interaction.response.send_message("No PS codes in the pool.", ephemeral=True)
+        lines = []
+        for r in rows["results"]:
+            status = f"in use (match `{r['match_id']}`)" if r["match_id"] else "available"
+            lines.append(f"`{r['code']}` — {status}")
+        await interaction.response.send_message(
+            "**PS Code Pool:**\n" + "\n".join(lines), ephemeral=True
+        )
+
 
 # ── Panel views (persistent) ───────────────────────────────────────────────────
 
@@ -1638,8 +1771,8 @@ class PvPPanelView(discord.ui.View):
             embed=discord.Embed(
                 title="⚔️ Select Match Type",
                 description=(
-                    "**Ranked** — ELO-based. Requires 10 placement matches.\n"
-                    "**Casual** — No ELO impact. Placement matches count here."
+                    "**Ranked** — ELO-based. First 10 matches are placement (boosted gains). Earns a rank.\n"
+                    "**Casual** — No ELO or placement impact. Play for fun."
                 ),
                 color=discord.Color.blurple(),
             ),
@@ -1682,10 +1815,6 @@ class MatchTypeView(discord.ui.View):
         if banned:
             return await interaction.response.send_message(
                 "❌ You are suspended from PvP.", ephemeral=True)
-
-        if match_type == "ranked" and not placed:
-            return await interaction.response.send_message(
-                f"❌ Complete {PLACEMENT_MATCHES} casual placement matches first!", ephemeral=True)
 
         await cog._queue_add(self.guild_id, interaction.user.id, match_type, elo, trust)
 
