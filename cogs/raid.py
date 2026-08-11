@@ -1351,11 +1351,10 @@ class JoinRaidView(discord.ui.View):
                 "🚫 You are blacklisted.",
                 ephemeral=True
             )
-        # Safe modal sending
-        if not interaction.response.is_done():
+        try:
             await interaction.response.send_modal(JoinRaidModal())
-        else:
-            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 class RaidControlView(discord.ui.View):
@@ -1559,11 +1558,10 @@ class StartRaidPanelView(discord.ui.View):
                 "❌ A raid is already active.",
                 ephemeral=True
             )
-        # Safe modal sending
-        if not interaction.response.is_done():
+        try:
             await interaction.response.send_modal(StartRaidModal())
-        else:
-            await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 # ── Raid Cog ──────────────────────────────────────────────────────────────────

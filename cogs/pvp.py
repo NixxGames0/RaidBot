@@ -528,10 +528,36 @@ class PvPCog(commands.Cog):
         self._panel_msg_id: int | None = None
         self._matchmaking_task = bot.loop.create_task(self._matchmaking_loop())
         self._panel_task = bot.loop.create_task(self._ensure_panel())
+        self._rank_assign_task = bot.loop.create_task(self._assign_unranked_on_startup())
 
     def cog_unload(self):
         self._matchmaking_task.cancel()
         self._panel_task.cancel()
+        self._rank_assign_task.cancel()
+
+    async def _assign_unranked_on_startup(self):
+        await self.bot.wait_until_ready()
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        unranked_role = guild.get_role(UNRANKED_ROLE_ID)
+        if not unranked_role:
+            print(f"[PvP] Unranked role {UNRANKED_ROLE_ID} not found")
+            return
+        count = 0
+        for member in guild.members:
+            if not is_linked(member):
+                continue
+            if any(r.id in ALL_RANK_ROLE_IDS for r in member.roles):
+                continue
+            try:
+                await member.add_roles(unranked_role, reason="PvP: auto-assign Unranked")
+                count += 1
+                await asyncio.sleep(0.5)  # stay under rate limit
+            except Exception:
+                pass
+        if count:
+            print(f"✅ Assigned Unranked PvP role to {count} linked member(s)")
 
     async def _ensure_panel(self):
         await self.bot.wait_until_ready()
@@ -751,6 +777,108 @@ class PvPCog(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, view=PvPPanelView())
 
+    @app_commands.command(name="challenge", description="Send a casual PvP challenge to another player")
+    @app_commands.describe(user="The player you want to challenge")
+    async def challenge(self, interaction: discord.Interaction, user: discord.Member):
+        if user.id == interaction.user.id:
+            return await interaction.response.send_message(
+                "❌ You can't challenge yourself.", ephemeral=True)
+        if user.bot:
+            return await interaction.response.send_message(
+                "❌ You can't challenge a bot.", ephemeral=True)
+        if not is_linked(interaction.user):
+            return await interaction.response.send_message(
+                "❌ You need a linked Roblox account to use PvP.", ephemeral=True)
+        if not is_linked(user):
+            return await interaction.response.send_message(
+                f"❌ {user.mention} hasn't linked their Roblox account yet.", ephemeral=True)
+
+        guild_id = interaction.guild_id
+        if self._in_match(interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ You are already in an active match.", ephemeral=True)
+        if self._in_match(user.id):
+            return await interaction.response.send_message(
+                f"❌ {user.mention} is already in a match.", ephemeral=True)
+        if self._in_queue(guild_id, interaction.user.id):
+            return await interaction.response.send_message(
+                "❌ You are already in the queue. Use `/pvpleave` first.", ephemeral=True)
+
+        # Queue timeout check
+        row = await d1_query(
+            "SELECT pvp_timeout_until FROM users WHERE discord_id = ?",
+            [str(interaction.user.id)]
+        )
+        if row["results"]:
+            timeout_str = row["results"][0].get("pvp_timeout_until")
+            if timeout_str:
+                timeout_dt = datetime.fromisoformat(timeout_str)
+                if timeout_dt.tzinfo is None:
+                    timeout_dt = timeout_dt.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) < timeout_dt:
+                    rem = int((timeout_dt - datetime.now(timezone.utc)).total_seconds() // 60)
+                    return await interaction.response.send_message(
+                        f"⏳ You are in a queue timeout for **{rem} more minute(s)**.",
+                        ephemeral=True)
+
+        # Fetch both players' ELO
+        p_row = await d1_query(
+            "SELECT pvp_elo, pvp_trust FROM users WHERE discord_id = ?",
+            [str(interaction.user.id)]
+        )
+        o_row = await d1_query(
+            "SELECT pvp_elo FROM users WHERE discord_id = ?",
+            [str(user.id)]
+        )
+        p_elo = (p_row["results"][0].get("pvp_elo") or BASE_ELO) if p_row["results"] else BASE_ELO
+        o_elo = (o_row["results"][0].get("pvp_elo") or BASE_ELO) if o_row["results"] else BASE_ELO
+        p_trust = (p_row["results"][0].get("pvp_trust") or 10.0) if p_row["results"] else 10.0
+
+        await interaction.response.send_message(
+            f"✅ Challenge sent to {user.mention}! They have **60 seconds** to respond.",
+            ephemeral=True
+        )
+
+        # Create a direct casual match between the two players
+        match_id = str(uuid.uuid4())[:8]
+        expiry = datetime.now(timezone.utc) + timedelta(seconds=60)
+        pvp_pending[match_id] = {
+            "player1": interaction.user.id,
+            "player2": user.id,
+            "match_type": "casual",
+            "p1_accepted": True,  # challenger already accepted
+            "p2_accepted": False,
+            "expiry": expiry,
+        }
+
+        now = datetime.now(timezone.utc).isoformat()
+        await d1_query(
+            """INSERT INTO pvp_matches
+               (match_id, player1_id, player2_id, match_type, p1_elo_before, p2_elo_before, started_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [match_id, str(interaction.user.id), str(user.id), "casual", p_elo, o_elo, now, now]
+        )
+
+        embed = discord.Embed(
+            title="⚔️ PvP Challenge!",
+            description=(
+                f"{interaction.user.mention} has challenged you to a **casual** match!\n\n"
+                f"**Challenger ELO:** {p_elo}\n"
+                f"**Your ELO:** {o_elo}"
+            ),
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_footer(text="You have 60 seconds to respond.")
+        try:
+            await user.send(embed=embed, view=MatchFoundView(match_id, guild_id, user.id))
+        except discord.Forbidden:
+            pvp_pending.pop(match_id, None)
+            await interaction.followup.send(
+                f"❌ Could not DM {user.mention} — they may have DMs disabled.",
+                ephemeral=True
+            )
+
     @app_commands.command(name="pvpleave", description="Leave the PvP queue")
     async def pvp_leave(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
@@ -856,12 +984,14 @@ class MatchTypeView(discord.ui.View):
         await cog._queue_add(self.guild_id, interaction.user.id, match_type, elo, trust)
 
         queue_size = len(pvp_queue.get(self.guild_id, {}))
+        join_ts = int(datetime.now(timezone.utc).timestamp())
         await interaction.response.send_message(
             embed=discord.Embed(
                 title=f"✅ Entered {match_type.capitalize()} Queue",
                 description=(
                     f"Looking for an opponent...\n"
-                    f"Players in queue: **{queue_size}**\n\n"
+                    f"Players in queue: **{queue_size}**\n"
+                    f"Time in queue: <t:{join_ts}:R>\n\n"
                     "You will receive a DM when a match is found.\n"
                     "Use `/pvpleave` to exit the queue."
                 ),

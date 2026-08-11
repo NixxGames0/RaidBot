@@ -30,6 +30,7 @@ TICKET_PANEL_CHANNEL_ID = 1535906243435040788
 SHOP_PANEL_CHANNEL_ID = 1535562484788891658
 RAID_GATE_CHANNEL_ID = 1535561934534082610
 RULES_CHANNEL_ID = 1535979621193883648
+PVP_PANEL_CHANNEL_ID = 1536655138754789386
 
 # ── Import custom role panel builder ─────────────────────────────────────
 from cogs.custom_roles import CUSTOM_ROLE_CHANNEL_ID, build_custom_role_panel
@@ -282,56 +283,26 @@ class Panel(commands.Cog):
         self.bot.loop.create_task(self.register_persistent_views())
 
     async def register_persistent_views(self):
-        """Register all persistent views on bot startup"""
+        """Register persistent views owned by this cog only.
+        Raid, Ticket, Shop, CustomRole views are registered by their own cogs."""
         try:
             await self.bot.wait_until_ready()
 
-            # Register PS Panel View
-            ps_view = PSPanelView()
-            self.bot.add_view(ps_view)
+            # Register PS Panel View (owned by panel.py)
+            self.bot.add_view(PSPanelView())
             print("✅ Registered persistent PS Panel view")
 
-            # Register Verify Panel View
+            # Register Verify Panel View (owned by panel.py)
             try:
                 from cogs.verify import VerifyPanelView
-                verify_view = VerifyPanelView()
-                self.bot.add_view(verify_view)
+                self.bot.add_view(VerifyPanelView())
                 print("✅ Registered persistent Verify Panel view")
             except Exception as e:
                 print(f"Could not register Verify Panel view: {e}")
 
-            # Register Raid Panel View (only the views, not the cog)
-            try:
-                from cogs.raid import StartRaidPanelView, JoinRaidView, RaidControlView
-                raid_view = StartRaidPanelView()
-                self.bot.add_view(raid_view)
-                join_view = JoinRaidView()
-                self.bot.add_view(join_view)
-                control_view = RaidControlView()
-                self.bot.add_view(control_view)
-                print("✅ Registered persistent Raid Panel views")
-            except Exception as e:
-                print(f"Could not register Raid Panel views: {e}")
+            # NOTE: Raid, Ticket, Shop, CustomRole views are registered
+            # by their respective cogs — do NOT add_view them here.
 
-            # Register Ticket Panel View
-            try:
-                from cogs.ticket import TicketPanelView
-                ticket_view = TicketPanelView()
-                self.bot.add_view(ticket_view)
-                print("✅ Registered persistent Ticket Panel view")
-            except Exception as e:
-                print(f"Could not register Ticket Panel view: {e}")
-
-            # Register Shop Panel View
-            try:
-                from cogs.shop import ShopPanelView
-                shop_view = ShopPanelView()
-                self.bot.add_view(shop_view)
-                print("✅ Registered persistent Shop Panel view")
-            except Exception as e:
-                print(f"Could not register Shop Panel view: {e}")
-
-            # Register Custom Role Panel View
             try:
                 from cogs.custom_roles import CustomRolePanelView
                 custom_view = CustomRolePanelView()
@@ -375,6 +346,7 @@ class Panel(commands.Cog):
             gate_channel = self.bot.get_channel(RAID_GATE_CHANNEL_ID)
             rules_channel = self.bot.get_channel(RULES_CHANNEL_ID)
             custom_channel = self.bot.get_channel(CUSTOM_ROLE_CHANNEL_ID)
+            pvp_channel = self.bot.get_channel(PVP_PANEL_CHANNEL_ID)
 
             missing = []
             if not ps_channel:
@@ -393,6 +365,8 @@ class Panel(commands.Cog):
                 missing.append("Rules Channel")
             if not custom_channel:
                 missing.append("Custom Role Panel")
+            if not pvp_channel:
+                missing.append("PvP Panel")
 
             if missing:
                 return await interaction.followup.send(
@@ -409,6 +383,7 @@ class Panel(commands.Cog):
             await gate_channel.purge(limit=1000, check=lambda m: not m.pinned)
             await rules_channel.purge(limit=1000, check=lambda m: not m.pinned)
             await custom_channel.purge(limit=1000, check=lambda m: not m.pinned)
+            await pvp_channel.purge(limit=1000, check=lambda m: not m.pinned)
 
             # ── Send Rules Panel ──────────────────────────────────────────────
             rules_embed = discord.Embed(
@@ -600,7 +575,6 @@ class Panel(commands.Cog):
                 inline=False
             )
             ps_view = PSPanelView()
-            self.bot.add_view(ps_view)
             await ps_channel.send(embed=ps_embed, view=ps_view)
 
             # ── Send Verify Panel ────────────────────────────────────────────
@@ -693,7 +667,6 @@ class Panel(commands.Cog):
 
             from cogs.verify import VerifyPanelView
             verify_view = VerifyPanelView()
-            self.bot.add_view(verify_view)
             await verify_channel.send(
                 "**Click the button below to start verification!**",
                 view=verify_view
@@ -707,7 +680,6 @@ class Panel(commands.Cog):
             )
             from cogs.raid import StartRaidPanelView
             raid_view = StartRaidPanelView()
-            self.bot.add_view(raid_view)
             await raid_channel.send(embed=raid_embed, view=raid_view)
 
             # ── Send Ticket Panel ────────────────────────────────────────────
@@ -726,13 +698,11 @@ class Panel(commands.Cog):
 
             from cogs.ticket import TicketPanelView
             ticket_view = TicketPanelView()
-            self.bot.add_view(ticket_view)
             await ticket_channel.send(embed=ticket_embed, view=ticket_view)
 
             # ── Send Shop Panel ──────────────────────────────────────────────
             from cogs.shop import ShopPanelView, get_shop_items
             shop_view = ShopPanelView()
-            self.bot.add_view(shop_view)
 
             items = await get_shop_items()
             items_text = ""
@@ -769,7 +739,6 @@ class Panel(commands.Cog):
 
             # ── Send Custom Role Panel ──────────────────────────────────────
             custom_embed, custom_view = build_custom_role_panel()
-            self.bot.add_view(custom_view)
             await custom_channel.send(embed=custom_embed, view=custom_view)
 
             # ── Check for Active Raid ────────────────────────────────────────
@@ -797,13 +766,11 @@ class Panel(commands.Cog):
                 ctrl_embed.add_field(name="Wave", value=f"{active_raid['wave']}/20", inline=True)
 
                 raid_control_view = RaidControlView()
-                self.bot.add_view(raid_control_view)
                 await raid_channel.send(embed=ctrl_embed, view=raid_control_view)
 
                 # Send gate status
                 gate_embed = await build_gate_embed(interaction.guild, active_raid)
                 join_view = JoinRaidView()
-                self.bot.add_view(join_view)
                 await gate_channel.send(embed=gate_embed, view=join_view)
 
                 # Log that the control panel was re-sent
@@ -814,6 +781,22 @@ class Panel(commands.Cog):
                     timestamp=datetime.now(timezone.utc)
                 )
                 await send_log(self.bot, log_embed)
+
+            # ── Send PvP Panel ──────────────────────────────────────────────
+            pvp_cog = self.bot.cogs.get("PvPCog")
+            if pvp_cog:
+                pvp_embed = pvp_cog._build_panel_embed(interaction.guild_id)
+                from cogs.pvp import PvPPanelView
+                pvp_view = PvPPanelView()
+                pvp_msg = await pvp_channel.send(embed=pvp_embed, view=pvp_view)
+                pvp_cog._panel_msg_id = pvp_msg.id
+                try:
+                    await d1_query(
+                        "INSERT OR REPLACE INTO bot_meta (key, value) VALUES ('pvp_panel_msg_id', ?)",
+                        [str(pvp_msg.id)]
+                    )
+                except Exception:
+                    pass
 
             # ── Log the action ──────────────────────────────────────────────
             log_embed = discord.Embed(
@@ -829,6 +812,7 @@ class Panel(commands.Cog):
             log_embed.add_field(name="Ticket Panel", value=f"<#{TICKET_PANEL_CHANNEL_ID}>", inline=True)
             log_embed.add_field(name="Shop Panel", value=f"<#{SHOP_PANEL_CHANNEL_ID}>", inline=True)
             log_embed.add_field(name="Custom Role Panel", value=f"<#{CUSTOM_ROLE_CHANNEL_ID}>", inline=True)
+            log_embed.add_field(name="PvP Panel", value=f"<#{PVP_PANEL_CHANNEL_ID}>", inline=True)
             if active_raid:
                 log_embed.add_field(name="Active Raid", value=f"`{active_raid['raid_id']}`", inline=True)
             await send_log(self.bot, log_embed)
