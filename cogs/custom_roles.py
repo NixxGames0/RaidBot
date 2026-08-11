@@ -86,9 +86,14 @@ async def fetch_raw_role_colors(guild: discord.Guild) -> dict:
         logger.warning(f"Could not fetch raw role data for gradient detection: {e}")
         return {}
 
+    builtin_ids = set(ROLE_ICON_MAP.values())
     out: dict = {}
     for rd in raw_roles:
         rid = int(rd.get("id", 0))
+
+        # Print raw data for every built-in role so we can see what Discord returns
+        if rid in builtin_ids:
+            print(f"[RAW ROLE] id={rid} color={rd.get('color')} color_gradient={rd.get('color_gradient')!r}")
 
         grad = rd.get("color_gradient")
         if isinstance(grad, dict):
@@ -96,17 +101,13 @@ async def fetch_raw_role_colors(guild: discord.Guild) -> dict:
             colors = [c for c in (grad.get("colors") or []) if c is not None]
             if len(colors) >= 2:
                 out[rid] = to_rgb(colors[0]), to_rgb(colors[1])
-                logger.debug(f"Role {rid}: gradient {colors[0]:06x} → {colors[1]:06x}")
+                print(f"[GRADIENT] role {rid}: #{colors[0]:06x} → #{colors[1]:06x}")
                 continue
             if colors:
                 out[rid] = to_rgb(colors[0]), None
                 continue
-        elif grad is not None:
-            logger.debug(f"Role {rid}: unexpected color_gradient format: {grad!r}")
 
         val = rd.get("color", 0)
-        if rid in {v for v in ROLE_ICON_MAP.values()}:
-            logger.debug(f"Role {rid}: flat color {val:06x}, color_gradient={grad!r}")
         out[rid] = (to_rgb(val) if val else _DEFAULT_ICON_COLOR, None)
 
     return out
