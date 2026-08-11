@@ -402,6 +402,7 @@ COGS = [
     "cogs.profile",
     "cogs.pvp",
     "cogs.verifyrandom",
+    "cogs.shutdown",
 ]
 
 
