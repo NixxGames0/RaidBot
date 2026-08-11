@@ -689,6 +689,7 @@ class StartRaidModal(discord.ui.Modal, title="Start Raid"):
         embed.set_footer(text="Live status updates automatically.")
         view = RaidSetupView(host_id=interaction.user.id, code=code, host_mention=interaction.user.mention)
         msg = await host_channel.send(embed=embed, view=view)
+        view.setup_msg = msg
         await track_setup_message(guild_id, msg.id)
         await interaction.followup.send("✅ Raid setup panel created! Check the channel.", ephemeral=True)
         gate_ch = interaction.guild.get_channel(RAID_GATE_ID)
@@ -772,6 +773,13 @@ class UpdateWaveModal(discord.ui.Modal, title="Update Wave"):
                 await msg.edit(embed=embed)
             except Exception:
                 pass
+        host_ch = interaction.guild.get_channel(HOST_CHANNEL_ID)
+        if host_ch and raid.get("control_msg_id"):
+            try:
+                ctrl_msg = await host_ch.fetch_message(raid["control_msg_id"])
+                await ctrl_msg.edit(embed=build_control_embed(raid))
+            except Exception:
+                pass
         await interaction.followup.send(f"✅ Wave updated to **{w}/20**.", ephemeral=True)
 
 
@@ -823,6 +831,13 @@ class JoinRaidModal(discord.ui.Modal, title="Join Raid"):
                 msg = await gate_ch.fetch_message(raid["gate_message_id"])
                 embed = await build_gate_embed(interaction.guild, raid)
                 await msg.edit(embed=embed)
+            except Exception:
+                pass
+        host_ch = interaction.guild.get_channel(HOST_CHANNEL_ID)
+        if host_ch and raid.get("control_msg_id"):
+            try:
+                ctrl_msg = await host_ch.fetch_message(raid["control_msg_id"])
+                await ctrl_msg.edit(embed=build_control_embed(raid))
             except Exception:
                 pass
         code_embed = discord.Embed(
@@ -1075,6 +1090,21 @@ async def end_raid(interaction: discord.Interaction, final_wave: int):
     await interaction.followup.send(msg, ephemeral=True)
 
 
+def build_control_embed(raid: dict) -> discord.Embed:
+    ctrl_embed = discord.Embed(
+        title="⚔️ Raid Controls",
+        description="Raid is **ACTIVE**. Use the buttons below to manage it.",
+        color=discord.Color.green(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    ctrl_embed.add_field(name="Raid ID", value=f"`{raid['raid_id']}`", inline=True)
+    ctrl_embed.add_field(name="Host", value=f"<@{raid['host_id']}>", inline=True)
+    ctrl_embed.add_field(name="Wave", value=f"{raid['wave']}/20", inline=True)
+    ctrl_embed.add_field(name="Players", value=f"{len(raid.get('player_ids', []))}", inline=True)
+    ctrl_embed.add_field(name="Auto-Timeout", value=f"{RAID_TIMEOUT_MINUTES} minutes", inline=True)
+    return ctrl_embed
+
+
 class RaidSetupView(discord.ui.View):
     def __init__(self, host_id, code, host_mention):
         super().__init__(timeout=300)
@@ -1084,6 +1114,7 @@ class RaidSetupView(discord.ui.View):
         self.pending_invites = {}
         self.pending_hosters = [host_id]
         self.message_id = None
+        self.setup_msg = None
 
     async def update_setup_embed(self, interaction: discord.Interaction):
         embed = discord.Embed(
@@ -1103,7 +1134,13 @@ class RaidSetupView(discord.ui.View):
         pending_count = len(self.pending_invites)
         embed.add_field(name="📨 Pending Invites", value=str(pending_count), inline=True)
         embed.set_footer(text="Live status updates automatically.")
-        await interaction.message.edit(embed=embed)
+        if self.setup_msg:
+            try:
+                await self.setup_msg.edit(embed=embed)
+            except Exception as e:
+                print(f"Failed to edit setup embed: {e}")
+        else:
+            await interaction.message.edit(embed=embed)
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1213,17 +1250,7 @@ class RaidSetupView(discord.ui.View):
             gate_msg = await gate_ch.send(content=ping_msg, embed=gate_embed, view=JoinRaidView())
             raid["gate_message_id"] = gate_msg.id
         if host_ch:
-            ctrl_embed = discord.Embed(
-                title="⚔️ Raid Controls",
-                description="Raid is **ACTIVE**. Use the buttons below to manage it.",
-                color=discord.Color.green(),
-                timestamp=now
-            )
-            ctrl_embed.add_field(name="Raid ID", value=f"`{raid_id}`", inline=True)
-            ctrl_embed.add_field(name="Host", value=f"<@{self.host_id}>", inline=True)
-            ctrl_embed.add_field(name="Wave", value="1/20", inline=True)
-            ctrl_embed.add_field(name="Auto-Timeout", value=f"{RAID_TIMEOUT_MINUTES} minutes", inline=True)
-            ctrl_msg = await host_ch.send(embed=ctrl_embed, view=RaidControlView())
+            ctrl_msg = await host_ch.send(embed=build_control_embed(raid), view=RaidControlView())
             raid["control_msg_id"] = ctrl_msg.id
 
         # ─── Send the PS code as an ephemeral message in the control channel ──
@@ -1421,16 +1448,23 @@ class HosterInviteView(discord.ui.View):
             raid["hosters"].append(self.invitee_id)
             raid["pending_invites"].pop(self.invitee_id, None)
 
-        # Send the PS code immediately – try DM first, fallback to channel followup
+        # Resolve the PS code — sv.code works during setup before confirm;
+        # fall back to the live raid dict once the raid is confirmed.
+        _sv = self.setup_view
+        code = _sv.code if _sv else None
+        if code is None:
+            _raid_now = raids.get(self.guild_id)
+            code = _raid_now.get("code") if _raid_now else None
+
+        # Send the PS code immediately – try DM first, fallback to ephemeral
         code_sent = False
         try:
-            raid = raids.get(self.guild_id)
-            if raid and raid.get("code"):
+            if code:
                 invitee = interaction.client.get_user(self.invitee_id)
                 if invitee:
                     code_embed = discord.Embed(
                         title="⚔️ Raid Code",
-                        description=f"### `{raid['code']}`",
+                        description=f"### `{code}`",
                         color=discord.Color.green(),
                         timestamp=datetime.now(timezone.utc)
                     )
@@ -1447,19 +1481,16 @@ class HosterInviteView(discord.ui.View):
                 "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
                 ephemeral=True
             )
+        elif code:
+            await interaction.response.send_message(
+                f"✅ You have joined the raid as a co-hoster!\n🔑 Your raid code: `{code}`\nKeep this private!",
+                ephemeral=True
+            )
         else:
-            # Fallback: send the code in the interaction response (ephemeral)
-            raid = raids.get(self.guild_id)
-            if raid and raid.get("code"):
-                await interaction.response.send_message(
-                    f"✅ You have joined the raid as a co-hoster!\n🔑 Your raid code: `{raid['code']}`\nKeep this private!",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    "✅ You have joined the raid as a co-hoster! (Code not available yet – contact the host.)",
-                    ephemeral=True
-                )
+            await interaction.response.send_message(
+                "✅ You have joined the raid as a co-hoster! (Code not available – contact the host.)",
+                ephemeral=True
+            )
 
         # Notify the host
         try:
