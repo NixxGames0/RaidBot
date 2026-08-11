@@ -1003,6 +1003,8 @@ class GiveawayPublicView(discord.ui.View):
 
 # ─── Cog ────────────────────────────────────────────────────
 class Giveaway(commands.Cog):
+    giveaway = app_commands.Group(name="giveaway", description="Giveaway commands")
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.loop.create_task(self.init_db())
@@ -1208,9 +1210,9 @@ class Giveaway(commands.Cog):
         await message.edit(embed=embed, view=view)
 
     # ─── Commands ────────────────────────────────────────────
-    @app_commands.command(name="sgiveaway", description="Start a new giveaway (Requires Giveaway Host role)")
+    @giveaway.command(name="start", description="Start a new giveaway (Requires Giveaway Host role)")
     @app_commands.checks.cooldown(1, 10)
-    async def sgiveaway(self, interaction: discord.Interaction):
+    async def giveaway_start(self, interaction: discord.Interaction):
         # Immediate defer to avoid timeout
         try:
             if not interaction.response.is_done():
@@ -1229,10 +1231,10 @@ class Giveaway(commands.Cog):
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="egiveaway", description="Edit an existing giveaway")
+    @giveaway.command(name="edit", description="Edit an existing giveaway")
     @app_commands.describe(giveaway_id="The giveaway ID to edit")
     @app_commands.checks.cooldown(1, 10)
-    async def egiveaway(self, interaction: discord.Interaction, giveaway_id: str):
+    async def giveaway_edit(self, interaction: discord.Interaction, giveaway_id: str):
         await interaction.response.defer(ephemeral=True)
 
         row = await d1_query(
@@ -1271,9 +1273,9 @@ class Giveaway(commands.Cog):
         embed = view.build_embed()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="giveaways", description="List all active giveaways")
+    @giveaway.command(name="list", description="List all active giveaways")
     @app_commands.checks.cooldown(1, 10)
-    async def giveaways(self, interaction: discord.Interaction):
+    async def giveaway_list(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         rows = await d1_query(
             "SELECT giveaway_id, name, prize, end_time, entrants FROM giveaways WHERE status = 'active' ORDER BY created_at DESC"
@@ -1299,10 +1301,10 @@ class Giveaway(commands.Cog):
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="endgiveaway", description="Force end a giveaway (Head Staff+ only)")
+    @giveaway.command(name="end", description="Force end a giveaway early (Head Staff+ only)")
     @app_commands.describe(giveaway_id="The giveaway ID to end")
     @app_commands.checks.cooldown(1, 10)
-    async def endgiveaway(self, interaction: discord.Interaction, giveaway_id: str):
+    async def giveaway_end(self, interaction: discord.Interaction, giveaway_id: str):
         await interaction.response.defer(ephemeral=True)
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.followup.send("❌ Only Head Staff and Founder can end giveaways.", ephemeral=True)
@@ -1319,10 +1321,10 @@ class Giveaway(commands.Cog):
         await self.end_giveaway(giveaway_id, auto=False, early=True, interaction=interaction)
         await interaction.followup.send(f"✅ Giveaway `{giveaway_id}` ended early.", ephemeral=True)
 
-    @app_commands.command(name="reroll", description="Reroll a winner for an ended giveaway (pick a new winner)")
-    @app_commands.describe(giveaway_id="The giveaway ID to reroll", user="Optional: specify a winner to replace (reroll that specific winner)")
+    @giveaway.command(name="reroll", description="Pick a new winner for an ended giveaway")
+    @app_commands.describe(giveaway_id="The giveaway ID to reroll", user="Optional: replace a specific winner")
     @app_commands.checks.cooldown(1, 10)
-    async def reroll(self, interaction: discord.Interaction, giveaway_id: str, user: discord.Member = None):
+    async def giveaway_reroll(self, interaction: discord.Interaction, giveaway_id: str, user: discord.Member = None):
         await interaction.response.defer(ephemeral=True)
 
         row = await d1_query(

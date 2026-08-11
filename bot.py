@@ -314,11 +314,52 @@ async def init_database():
             )"""
         )
 
+        # ─── PvP tables ───────────────────────────────────────────────────────────
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS pvp_matches (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_id        TEXT    NOT NULL UNIQUE,
+                player1_id      TEXT    NOT NULL,
+                player2_id      TEXT    NOT NULL,
+                match_type      TEXT    NOT NULL,
+                winner_id       TEXT,
+                p1_elo_before   INTEGER,
+                p2_elo_before   INTEGER,
+                p1_elo_after    INTEGER,
+                p2_elo_after    INTEGER,
+                channel_id      TEXT,
+                started_at      TEXT    NOT NULL,
+                ended_at        TEXT,
+                created_at      TEXT    NOT NULL
+            )"""
+        )
+        await d1_query(
+            """CREATE TABLE IF NOT EXISTS pvp_reports (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                reporter_id TEXT NOT NULL,
+                reported_id TEXT NOT NULL,
+                match_id    TEXT,
+                reason      TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                reviewed    INTEGER DEFAULT 0,
+                action_taken TEXT
+            )"""
+        )
+
         # Try adding missing columns (safe to run)
         for col_sql in [
             "ALTER TABLE users ADD COLUMN weekly_points INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN weekly_updated_at TEXT",
             "ALTER TABLE users ADD COLUMN total_points_earned INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN pvp_elo INTEGER DEFAULT 1000",
+            "ALTER TABLE users ADD COLUMN pvp_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN pvp_losses INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN pvp_placement_done INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN pvp_placement_left INTEGER DEFAULT 10",
+            "ALTER TABLE users ADD COLUMN pvp_rank TEXT DEFAULT 'Unranked'",
+            "ALTER TABLE users ADD COLUMN pvp_trust REAL DEFAULT 10.0",
+            "ALTER TABLE users ADD COLUMN pvp_deny_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN pvp_timeout_until TEXT",
         ]:
             try:
                 await d1_query(col_sql)
@@ -353,6 +394,8 @@ COGS = [
     "cogs.custom_roles",
     "cogs.giveaway",
     "cogs.afk",
+    "cogs.profile",
+    "cogs.pvp",
 ]
 
 

@@ -818,7 +818,10 @@ class VerifyConfirmView(discord.ui.View):
         # Disable all buttons
         for item in self.children:
             item.disabled = True
-        await interaction.message.edit(view=self)
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
 
     @discord.ui.button(label="🔄 Regenerate Code", style=discord.ButtonStyle.secondary, emoji="🔄")
     async def regenerate_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1522,7 +1525,7 @@ class Verify(commands.Cog):
             print(f"Cleaned up expired game verification for user {uid}")
 
     @app_commands.command(
-        name="startverification",
+        name="verify",
         description="Link your Roblox account to Raid Hub"
     )
     @app_commands.checks.cooldown(1, 10)

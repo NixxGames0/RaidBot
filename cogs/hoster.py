@@ -472,8 +472,8 @@ class Hoster(commands.Cog):
 
     # ── /hleaderboard ─────────────────────────────────────────────────────────
     @app_commands.command(
-        name="hleaderboard",
-        description="View the hoster points leaderboard (total points earned)"
+        name="hosterboard",
+        description="Hoster points leaderboard — lifetime and weekly rankings"
     )
     @app_commands.checks.cooldown(1, 10)
     async def hleaderboard(self, interaction: discord.Interaction):

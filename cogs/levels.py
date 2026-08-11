@@ -108,23 +108,15 @@ def get_xp_multiplier(member: discord.Member) -> tuple:
     total_bonus_pct = 0
     bonuses = []
     
-    # Check if user has Linked role
     if is_linked(member):
         total_bonus_pct += LINKED_BONUS_PCT
         bonuses.append("Linked (+10%)")
-        print(f"[XP Bonus] {member.display_name} has Linked bonus: +10%")
-    
-    # Check if user is a booster
     if any(role.id == BOOSTER_ROLE_ID for role in member.roles):
         total_bonus_pct += BOOSTER_BONUS_PCT
         bonuses.append("Booster (+25%)")
-        print(f"[XP Bonus] {member.display_name} has Booster bonus: +25%")
-    
-    # Check if user is an Elite Hoster
     if is_elite_hoster(member):
         total_bonus_pct += ELITE_HOSTER_BONUS_PCT
         bonuses.append("Elite Hoster (+25%)")
-        print(f"[XP Bonus] {member.display_name} has Elite Hoster bonus: +25%")
     
     # Convert to multiplier (e.g., 60% bonus = 1.60x)
     multiplier = 1.0 + (total_bonus_pct / 100.0)
@@ -154,15 +146,13 @@ async def award_xp(user_id: int, amount: int, member: discord.Member = None) -> 
     Returns dict with level_up info or None if failed.
     """
     try:
-        # Apply bonuses if member is provided
         bonus_text = ""
+        multiplier, bonus_pct = 1.0, 0
         if member:
-            multiplier, bonuses, bonus_pct = get_xp_multiplier(member)
+            multiplier, _, bonus_pct = get_xp_multiplier(member)
             if multiplier > 1.0:
-                original_amount = amount
                 amount = int(amount * multiplier)
                 bonus_text = f" (+{bonus_pct}%)"
-                print(f"[XP] {member.display_name}: {original_amount} XP → {amount} XP ({bonus_pct}% bonus)")
         
         now = datetime.now(timezone.utc).isoformat()
 
@@ -194,9 +184,9 @@ async def award_xp(user_id: int, amount: int, member: discord.Member = None) -> 
             "new_exp": new_exp,
             "xp_gained": amount,
             "leveled_up": level_up,
-            "bonus_applied": member and get_xp_multiplier(member)[0] > 1.0,
+            "bonus_applied": multiplier > 1.0,
             "bonus_text": bonus_text,
-            "bonus_pct": get_xp_multiplier(member)[2] if member else 0
+            "bonus_pct": bonus_pct,
         }
 
     except Exception as e:
@@ -499,99 +489,103 @@ class Levels(commands.Cog):
     # ── /rank ──────────────────────────────────────────────────────────────────
     @app_commands.command(
         name="rank",
-        description="View your or another user's level & XP"
+        description="View your or another user's level, XP, and stats"
     )
     @app_commands.describe(user="User to check (leave empty for yourself)")
     @app_commands.checks.cooldown(1, 5)
     async def rank(self, interaction: discord.Interaction, user: discord.Member = None):
-        """Display a user's rank, level, and XP"""
         target = user or interaction.user
-
         await interaction.response.defer(ephemeral=False)
 
         try:
             row = await d1_query(
-                "SELECT level, exp FROM users WHERE discord_id = ?",
+                "SELECT level, exp, hoster_points, raids_completed FROM users WHERE discord_id = ?",
                 [str(target.id)]
             )
-
             if not row["results"]:
                 return await interaction.followup.send(
-                    f"❌ {target.mention} has no record. They need to `/verify` first."
+                    f"❌ {target.mention} hasn't verified yet — they need `/verify` first."
                 )
 
-            level = row["results"][0]["level"] or 1
-            exp = row["results"][0]["exp"] or 0
+            data = row["results"][0]
+            level = data["level"] or 1
+            exp = data["exp"] or 0
+            hoster_pts = data["hoster_points"] or 0
+            raids_done = data["raids_completed"] or 0
 
-            # Calculate progress
             xp_for_current = total_xp_for_level(level)
             xp_for_next = total_xp_for_level(level + 1)
             needed = xp_for_next - xp_for_current
-            progress = exp - xp_for_current
-
-            progress = max(0, progress)
-            percent = int((progress / needed) * 100) if needed > 0 else 0
-            percent = max(0, min(100, percent))
-            bar = progress_bar(progress, needed)
+            progress = max(0, exp - xp_for_current)
+            percent = min(100, int((progress / needed) * 100)) if needed > 0 else 100
+            bar = progress_bar(progress, needed, 16)
 
             rank_result = await d1_query(
-                "SELECT COUNT(*) + 1 as rank FROM users WHERE exp > ?",
-                [exp]
+                "SELECT COUNT(*) + 1 as rank FROM users WHERE exp > ?", [exp]
             )
             global_rank = rank_result["results"][0]["rank"] if rank_result["results"] else "N/A"
+            rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "N/A"
+
+            top10_badge = " 🏆" if str(global_rank) != "N/A" and int(global_rank) <= 10 else ""
 
             embed = discord.Embed(
-                title=f"📊 Rank • {target.display_name}",
                 color=discord.Color.blurple(),
                 timestamp=datetime.now(timezone.utc)
             )
-
-            if target.display_avatar:
-                embed.set_thumbnail(url=target.display_avatar.url)
-
-            embed.add_field(name="Level", value=f"**{level}**", inline=True)
-            embed.add_field(name="Total XP", value=f"**{exp:,}**", inline=True)
-            embed.add_field(name="Global Rank", value=f"**#{global_rank}**", inline=True)
+            embed.set_author(
+                name=f"{target.display_name}{top10_badge}",
+                icon_url=target.display_avatar.url if target.display_avatar else None
+            )
 
             embed.add_field(
-                name="Progress to Next Level",
-                value=f"`{bar}` {percent}%\n{progress:,} / {needed:,} XP",
+                name="Level",
+                value=f"**{level}**",
+                inline=True
+            )
+            embed.add_field(
+                name="Total XP",
+                value=f"**{exp:,}**",
+                inline=True
+            )
+            embed.add_field(
+                name="Rank",
+                value=f"**{rank_str}**",
+                inline=True
+            )
+
+            embed.add_field(
+                name=f"Progress to Level {level + 1}",
+                value=f"`{bar}` **{percent}%**\n{progress:,} / {needed:,} XP  •  **{needed - progress:,}** to go",
                 inline=False
             )
 
             embed.add_field(
-                name="XP Remaining",
-                value=f"**{needed - progress:,}** XP",
+                name="Hoster Points",
+                value=f"**{hoster_pts:,}**",
+                inline=True
+            )
+            embed.add_field(
+                name="Raids Completed",
+                value=f"**{raids_done:,}**",
                 inline=True
             )
 
-            # ── Show XP Bonuses ──────────────────────────────────────────────
+            # XP bonus — only show for own card
             if target.id == interaction.user.id:
                 _, bonuses, bonus_pct = get_xp_multiplier(target)
                 if bonus_pct > 0:
-                    bonus_list = ", ".join(bonuses)
                     embed.add_field(
-                        name="✨ Active XP Bonuses",
-                        value=f"You have **+{bonus_pct}%** XP bonus active!\n{bonus_list}",
+                        name="✨ XP Bonus",
+                        value=f"+**{bonus_pct}%** · {', '.join(bonuses)}",
                         inline=True
                     )
 
-            # Check if user is in top 10
-            if str(global_rank) != "N/A" and int(global_rank) <= 10:
-                embed.add_field(
-                    name="🏆 Achievement",
-                    value="You're in the **Top 10**! Keep it up!",
-                    inline=True
-                )
-
-            embed.set_footer(text=f"ID: {target.id}")
+            embed.set_footer(text=f"ID: {target.id} · Use /xprewards to see how XP is earned")
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
             print(f"Error in rank command: {e}")
-            await interaction.followup.send(
-                f"❌ Error: {str(e)[:100]}"
-            )
+            await interaction.followup.send(f"❌ Error: {str(e)[:100]}")
 
     # ── /leaderboard ──────────────────────────────────────────────────────────
     @app_commands.command(
@@ -667,14 +661,13 @@ class Levels(commands.Cog):
     # ── /xprewards ────────────────────────────────────────────────────────────
     @app_commands.command(
         name="xprewards",
-        description="View how XP is earned"
+        description="View all the ways to earn XP and raid wave rewards"
     )
     @app_commands.checks.cooldown(1, 30)
     async def xprewards(self, interaction: discord.Interaction):
-        """Display information about XP rewards"""
         embed = discord.Embed(
-            title="📊 XP Rewards",
-            description="Here's how you can earn XP in the server!",
+            title="📊 How to Earn XP",
+            description="Every verified member earns XP. Level up to unlock roles and rewards!",
             color=discord.Color.gold(),
             timestamp=datetime.now(timezone.utc)
         )
@@ -748,7 +741,22 @@ class Levels(commands.Cog):
             inline=False
         )
 
-        embed.set_footer(text="Level up to unlock new roles and rewards!")
+        # Wave XP milestones (formula: 25 × 1.12^(wave-1))
+        milestones = [(w, int(25 * (1.12 ** (w - 1)))) for w in [1, 5, 10, 15, 20]]
+        wave_lines = "  ".join(f"W{w}: **{xp}**" for w, xp in milestones)
+        total_xp_full = sum(int(25 * (1.12 ** (w - 1))) for w in range(1, 21))
+        embed.add_field(
+            name="⚔️ Raid Hosting (Hoster+ only)",
+            value=(
+                f"• XP scales per wave completed — higher waves = much more XP\n"
+                f"{wave_lines}\n"
+                f"• Full clear (wave 20): **{total_xp_full:,}** XP + **20** hoster points\n"
+                f"• Elite Hosters get **+25%** on all raid XP"
+            ),
+            inline=False
+        )
+
+        embed.set_footer(text="Use /rank to see your current level and progress")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

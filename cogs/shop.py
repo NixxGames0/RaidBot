@@ -738,6 +738,8 @@ class ShopUpdateModal(discord.ui.Modal, title="Update Shop Item"):
 
 # ── Shop Cog ──────────────────────────────────────────────────────────────────
 class Shop(commands.Cog):
+    shop = app_commands.Group(name="shop", description="Shop commands")
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Register persistent views on startup
@@ -817,12 +819,9 @@ class Shop(commands.Cog):
             print(f"Error updating shop panel: {e}")
 
     # ── /shoplist ─────────────────────────────────────────────────────────────
-    @app_commands.command(
-        name="shoplist",
-        description="List all items in the shop (Hoster+ only)"
-    )
+    @shop.command(name="list", description="List all items in the shop (Hoster+ only)")
     @app_commands.checks.cooldown(1, 10)
-    async def shoplist(self, interaction: discord.Interaction):
+    async def shop_list(self, interaction: discord.Interaction):
         """List all shop items"""
         # Hoster+ only
         if not is_hoster(interaction.user) and not is_staff(interaction.user):
@@ -869,13 +868,10 @@ class Shop(commands.Cog):
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
     # ── /ashop ──────────────────────────────────────────────────────────────
-    @app_commands.command(
-        name="ashop",
-        description="Add an item to the shop (Head Staff+)"
-    )
+    @shop.command(name="add", description="Add an item to the shop (Head Staff+)")
     @app_commands.describe(name="Item name", cost="Item cost in points")
     @app_commands.checks.cooldown(1, 10)
-    async def ashop(self, interaction: discord.Interaction, name: str, cost: int):
+    async def shop_add(self, interaction: discord.Interaction, name: str, cost: int):
         # Head Staff+ only
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(
@@ -913,13 +909,10 @@ class Shop(commands.Cog):
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
     # ── /rshop ──────────────────────────────────────────────────────────────
-    @app_commands.command(
-        name="rshop",
-        description="Remove an item from the shop (Head Staff+)"
-    )
+    @shop.command(name="remove", description="Remove an item from the shop (Head Staff+)")
     @app_commands.describe(item_id="The ID of the item to remove")
     @app_commands.checks.cooldown(1, 10)
-    async def rshop(self, interaction: discord.Interaction, item_id: int):
+    async def shop_remove(self, interaction: discord.Interaction, item_id: int):
         # Head Staff+ only
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(
@@ -958,13 +951,10 @@ class Shop(commands.Cog):
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
     # ── /ushop ──────────────────────────────────────────────────────────────
-    @app_commands.command(
-        name="ushop",
-        description="Update a shop item (Head Staff+)"
-    )
+    @shop.command(name="edit", description="Update a shop item's name or cost (Head Staff+)")
     @app_commands.describe(item_id="The ID of the item to update")
     @app_commands.checks.cooldown(1, 10)
-    async def ushop(self, interaction: discord.Interaction, item_id: int):
+    async def shop_edit(self, interaction: discord.Interaction, item_id: int):
         # Head Staff+ only
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(

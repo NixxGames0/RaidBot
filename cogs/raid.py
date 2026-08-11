@@ -1833,62 +1833,6 @@ class Raid(commands.Cog):
         )
 
     @app_commands.command(
-        name="raidxp",
-        description="View XP rewards per wave (Hoster+ only)"
-    )
-    @app_commands.checks.cooldown(1, 30)
-    async def raidxp(self, interaction: discord.Interaction):
-        if not is_hoster(interaction.user) and not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You need the Hoster role to use this command.",
-                ephemeral=True
-            )
-        embed = discord.Embed(
-            title="📊 XP Rewards per Wave",
-            color=discord.Color.gold(),
-            timestamp=datetime.now(timezone.utc)
-        )
-        is_elite = is_elite_hoster(interaction.user)
-        bonus_text = " ✨ (+25% for Elite Hosters!)" if is_elite else ""
-        wave_xp = []
-        for wave in range(1, 21):
-            xp = get_xp_for_wave_sync(wave)
-            if is_elite:
-                xp = int(xp * 1.25)
-            wave_xp.append(f"Wave {wave}: **{xp}** XP{bonus_text if is_elite else ''}")
-        chunks = [wave_xp[i:i+10] for i in range(0, len(wave_xp), 10)]
-        for i, chunk in enumerate(chunks):
-            embed.add_field(
-                name=f"Waves {i*10 + 1}-{min((i+1)*10, 20)}",
-                value="\n".join(chunk),
-                inline=True
-            )
-        total_xp = get_total_xp_for_raid_sync(20)
-        if is_elite:
-            total_xp = int(total_xp * 1.25)
-            embed.add_field(
-                name="🏆 Total XP for Full Raid (Wave 1-20)",
-                value=f"**{total_xp}** XP ✨ **(+25% Elite Bonus!)**",
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="🏆 Total XP for Full Raid (Wave 1-20)",
-                value=f"**{total_xp}** XP",
-                inline=False
-            )
-        embed.add_field(
-            name="📊 Points per Wave",
-            value="**1 point per wave** (Full raid = 20 points)",
-            inline=False
-        )
-        if is_elite:
-            embed.set_footer(text="👑 Elite Hoster Bonus: 25% extra XP on all raids!")
-        else:
-            embed.set_footer(text="Formula: 25 * (1.12 ^ (wave-1)) | Higher waves give exponentially more XP!")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(
         name="members",
         description="List all players in the current raid (Staff only)"
     )
