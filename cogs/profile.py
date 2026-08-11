@@ -95,14 +95,18 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     key = (size, bold)
     if key in _font_cache:
         return _font_cache[key]
+    _base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     candidates = (
         [
+            os.path.join(_base, "fonts", "bold.ttf"),
+            os.path.join(_base, "fonts", "regular.ttf"),
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/calibrib.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
             "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
         ] if bold else [
+            os.path.join(_base, "fonts", "regular.ttf"),
             "C:/Windows/Fonts/arial.ttf",
             "C:/Windows/Fonts/calibri.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -472,7 +476,10 @@ class ProfileCog(commands.Cog):
     @app_commands.checks.cooldown(1, 5)
     async def profile(self, interaction: discord.Interaction, user: discord.Member = None):
         target = user or interaction.user
-        await interaction.response.defer(ephemeral=False)
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.NotFound:
+            return
 
         row = await d1_query(
             """SELECT level, exp, total_points_earned, weekly_points,
