@@ -13,15 +13,12 @@ class Shutdown(commands.Cog):
         name="shutdown",
         description="Shut down the bot immediately (owner only)"
     )
-    @app_commands.default_permissions(administrator=True)  # hides it from non‑admins
+    @app_commands.default_permissions(administrator=True)  # hides from non‑admins
     async def shutdown(self, interaction: discord.Interaction):
-        # Only the bot owner can use this
         owner = self.bot.application.owner
         if owner and interaction.user.id == owner.id:
             await interaction.response.send_message("🛑 Shutting down... Goodbye!", ephemeral=True)
-            # Close the Discord connection and then force-exit
             await self.bot.close()
-            # Ensure process terminates (Railway will auto‑restart unless stopped)
             os._exit(0)
         else:
             await interaction.response.send_message(

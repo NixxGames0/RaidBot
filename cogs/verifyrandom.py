@@ -12,9 +12,11 @@ from bot import d1_query, GUILD_ID, LINKED_ROLE_ID
 from cogs.verify import send_verification_log, send_log
 
 # ── Role IDs ──────────────────────────────────────────────────────────────
-RAID_PINGS_ROLE_ID      = 1535696574150090772
-GIVEAWAY_PINGS_ROLE_ID  = 1536324869422063626
-UNRANKED_ROLE_ID        = 1536659018549039214
+VERIFIED_ROLE_ID       = 1535554357762850817
+LINKED_ROLE_ID         = 1535663327085076572
+RAID_PINGS_ROLE_ID     = 1535696574150090772
+GIVEAWAY_PINGS_ROLE_ID = 1536324869422063626
+UNRANKED_ROLE_ID       = 1536659018549039214
 
 # ── Probabilities ────────────────────────────────────────────────────────
 LINK_CHANCE          = 0.60
@@ -31,7 +33,6 @@ LAST_NAMES  = ["Night", "Storm", "Shadow", "Phoenix", "Wolf", "Raven", "Frost", 
                "Wilder", "Thorne", "Vex", "Cipher", "Knight", "Hawk", "Fox", "Blaze", "Ember"]
 
 def generate_fallback_roblox_name():
-    """Generates a realistic-looking Roblox username (fallback when API fails)."""
     if random.random() < 0.5:
         sep = random.choice(["_", "", ".", "-"])
         if sep:
@@ -103,6 +104,8 @@ class VerifyRandom(commands.Cog):
 
         eligible = []
         for member in guild.members:
+            if member.bot:  # <-- Skip bots
+                continue
             if member.joined_at and member.joined_at > two_hours_ago:
                 if not any(role.id == LINKED_ROLE_ID for role in member.roles):
                     eligible.append(member)
@@ -204,6 +207,11 @@ class VerifyRandom(commands.Cog):
                 )
 
             # ── Assign roles ──────────────────────────────────────────────
+            # Always assign Verified (simulates Double Counter)
+            verified_role = guild.get_role(VERIFIED_ROLE_ID)
+            if verified_role and verified_role not in member.roles:
+                await member.add_roles(verified_role, reason="Verification (simulated)")
+
             linked_role = guild.get_role(LINKED_ROLE_ID)
             if linked_role and linked_role not in member.roles:
                 await member.add_roles(linked_role, reason="Verification")
@@ -222,7 +230,7 @@ class VerifyRandom(commands.Cog):
                 if giveaway_role and giveaway_role not in member.roles:
                     await member.add_roles(giveaway_role, reason="Giveaway Pings")
 
-            # ── Verification method ──────────────────────────────────────
+            # ── Random verification method ──────────────────────────────
             method = random.choice(["Bio Code", "Join Game"])
             if method == "Bio Code":
                 log_title = "🔗 Account Linked"
