@@ -1,4 +1,4 @@
-"""
+﻿"""
 /profile — image card.
 Layout: large username + role on one line, stat columns, PvP row.
 Rank icon = large semi-transparent watermark on the far right.
@@ -49,6 +49,20 @@ PVP_TIERS = [
     ("Bronze",   (217, 119,   6), (124,  45,  18)),
     ("Unranked", ( 75,  85,  99), ( 55,  65,  81)),
 ]
+
+def _clean_text(name: str) -> str:
+    """Remove emoji/symbols that Liberation/DejaVu fonts cannot render."""
+    def _keep(c: str) -> bool:
+        cp = ord(c)
+        return (
+            0x0020 <= cp <= 0x007E   # printable ASCII
+            or 0x00A0 <= cp <= 0x024F  # Latin Extended
+            or 0x0370 <= cp <= 0x03FF  # Greek
+            or 0x0400 <= cp <= 0x04FF  # Cyrillic
+            or 0x2000 <= cp <= 0x206F  # General Punctuation
+        )
+    return ''.join(c for c in name if _keep(c)).strip()
+
 
 def _pvp_rank_colors(rank_name: str) -> tuple[tuple, tuple]:
     for name, color, dark in PVP_TIERS:
@@ -371,7 +385,7 @@ async def _build_card(
     COL_W = 175
 
     # ── Line 1: Username + [role icon] + Role name (same line) ────────────
-    name_str = target.display_name[:20]
+    name_str = _clean_text(target.display_name)[:20]
     d.text((CX, 12), name_str, font=fn_name, fill=WHITE)
     name_w, name_h = _tsize(d, name_str, fn_name)
 
@@ -402,6 +416,8 @@ async def _build_card(
 
         role_x = icon_x + ICON_SZ + 10
         role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
+        # Strip emoji from role name before drawing — fonts can't render them
+        role_display = _clean_text(top_role.name)[:16] or top_role.name[:16]
         if role_icon:
             grad_src = role_icon
         else:
@@ -409,10 +425,10 @@ async def _build_card(
             grad_src = _gradient_rect(grad_pair[0], grad_pair[1], 200, 4) if grad_pair else None
 
         if grad_src is not None:
-            _gradient_text(card, (role_x, role_y), top_role.name[:16], fn_role,
+            _gradient_text(card, (role_x, role_y), role_display, fn_role,
                            grad_src, fallback_color=role_color)
         else:
-            d.text((role_x, role_y), top_role.name[:16], font=fn_role, fill=role_color)
+            d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
