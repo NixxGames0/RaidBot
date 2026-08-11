@@ -1430,34 +1430,42 @@ class HosterInviteView(discord.ui.View):
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="hoster_invite_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invitee_id:
-            return await interaction.response.send_message(
-                "❌ This invite is not for you.",
-                ephemeral=True
-            )
-        # Check if raid still exists
-        raid = raids.get(self.guild_id)
-        if raid and raid.get("confirmed"):
-            return await interaction.response.send_message(
-                "❌ This raid has already been confirmed. Invite expired.",
-                ephemeral=True
-            )
-        sv = self.setup_view
-        if sv:
-            if self.invitee_id in sv.pending_hosters:
+        try:
+            if interaction.user.id != self.invitee_id:
                 return await interaction.response.send_message(
-                    "⚠️ You are already a hoster.",
+                    "❌ This invite is not for you.",
                     ephemeral=True
                 )
+            raid = raids.get(self.guild_id)
+            if raid and raid.get("confirmed"):
+                return await interaction.response.send_message(
+                    "❌ This raid has already been confirmed. Invite expired.",
+                    ephemeral=True
+                )
+            sv = self.setup_view
+            if sv:
+                if self.invitee_id in sv.pending_hosters:
+                    return await interaction.response.send_message(
+                        "⚠️ You are already a hoster.",
+                        ephemeral=True
+                    )
+            elif raid:
+                if self.invitee_id in raid["hosters"]:
+                    return await interaction.response.send_message(
+                        "⚠️ You are already a hoster.",
+                        ephemeral=True
+                    )
+            # Defer before async operations (update_setup_embed, DM send)
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
+        # State updates
+        if sv:
             sv.pending_hosters.append(self.invitee_id)
             sv.pending_invites.pop(self.invitee_id, None)
             await sv.update_setup_embed(interaction)
         elif raid:
-            if self.invitee_id in raid["hosters"]:
-                return await interaction.response.send_message(
-                    "⚠️ You are already a hoster.",
-                    ephemeral=True
-                )
             raid["hosters"].append(self.invitee_id)
             raid["pending_invites"].pop(self.invitee_id, None)
 
@@ -1488,19 +1496,19 @@ class HosterInviteView(discord.ui.View):
         except Exception as e:
             print(f"❌ Could not DM co-hoster code: {e}")
 
-        # Respond to the interaction
+        # Followup response (interaction was deferred above)
         if code_sent:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "✅ You have joined the raid as a co-hoster! Check your DMs for the raid code.",
                 ephemeral=True
             )
         elif code:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ You have joined the raid as a co-hoster!\n🔑 Your raid code: `{code}`\nKeep this private!",
                 ephemeral=True
             )
         else:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "✅ You have joined the raid as a co-hoster! (Code not available – contact the host.)",
                 ephemeral=True
             )
@@ -1521,23 +1529,26 @@ class HosterInviteView(discord.ui.View):
 
     @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="hoster_invite_deny")
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.invitee_id:
-            return await interaction.response.send_message(
-                "❌ This invite is not for you.",
+        try:
+            if interaction.user.id != self.invitee_id:
+                return await interaction.response.send_message(
+                    "❌ This invite is not for you.",
+                    ephemeral=True
+                )
+            sv = self.setup_view
+            if sv:
+                sv.pending_invites.pop(self.invitee_id, None)
+            else:
+                raid = raids.get(self.guild_id)
+                if raid:
+                    raid["pending_invites"].pop(self.invitee_id, None)
+            self.stop()
+            await interaction.response.send_message(
+                "❌ You have denied the hoster invite.",
                 ephemeral=True
             )
-        sv = self.setup_view
-        if sv:
-            sv.pending_invites.pop(self.invitee_id, None)
-        else:
-            raid = raids.get(self.guild_id)
-            if raid:
-                raid["pending_invites"].pop(self.invitee_id, None)
-        self.stop()
-        await interaction.response.send_message(
-            "❌ You have denied the hoster invite.",
-            ephemeral=True
-        )
+        except discord.NotFound:
+            return
         try:
             host = interaction.client.get_user(self.host_id)
             if host is None:

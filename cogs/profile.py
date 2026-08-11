@@ -442,7 +442,7 @@ async def _build_card(
         role_x = icon_x + ICON_SZ + 10
         role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
         # Strip emoji from role name before drawing — fonts can't render them
-        role_display = _clean_text(top_role.name)[:16] or top_role.name[:16]
+        role_display = _clean_text(top_role.name)[:16]
         if role_icon:
             grad_src = role_icon
         else:
