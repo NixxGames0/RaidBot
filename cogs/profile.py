@@ -18,13 +18,15 @@ from bot import d1_query
 # ── PvP config ─────────────────────────────────────────────────────────────────
 PLACEMENT_MATCHES = 10
 
-# Only these role names will appear on the card — add/remove as needed
-RANK_ROLE_NAMES = {
-    "Founder", "Co-Founder",
-    "Head Staff", "Senior Staff", "Staff", "Trial Staff",
-    "Admin", "Moderator", "Senior Moderator", "Helper",
-    "Member",
-}
+# Priority-ordered rank role IDs — first match wins regardless of Discord role position
+RANK_PRIORITY = [
+    1535553078852325506,   # Founder
+    1535558010431340604,   # Head Staff
+    1535558108590383184,   # Mod
+    1535558050532827186,   # Trial Mod
+    1535556016865808444,   # Hoster
+    1535554357762850817,   # Verified
+]
 
 PVP_TIERS = [
     ("Master",   (255, 107, 107), (139,   0,   0)),
@@ -318,7 +320,7 @@ async def _build_card(
         ring_cy = 220 + rank_h // 2 + 2
         ring_right = ring_cx + 20 + 14              # right edge of ring + padding
         col1_start = CX + COL_W
-        ring_offset = max(0, ring_right - col1_start)
+        ring_offset = max(0, ring_right - col1_start) + 45
 
     for i, (label, value, color) in enumerate([
         ("PvP Rank", pvp_rank, pvp_col),
@@ -397,11 +399,10 @@ class ProfileCog(commands.Cog):
         )
         global_rank = rank_row["results"][0]["rank"] if rank_row["results"] else "N/A"
 
-        top_role: discord.Role | None = None
-        for role in reversed(target.roles):
-            if role.name in RANK_ROLE_NAMES:
-                top_role = role
-                break
+        role_map = {r.id: r for r in target.roles}
+        top_role: discord.Role | None = next(
+            (role_map[rid] for rid in RANK_PRIORITY if rid in role_map), None
+        )
 
         accent = (88, 101, 242)
         if top_role and top_role.color.value:
