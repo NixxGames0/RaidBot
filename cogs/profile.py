@@ -22,11 +22,23 @@ PLACEMENT_MATCHES = 10
 RANK_PRIORITY = [
     1535553078852325506,   # Founder
     1535558010431340604,   # Head Staff
+    1536740055643594782,   # Staff
     1535558108590383184,   # Mod
     1535558050532827186,   # Trial Mod
     1535556016865808444,   # Hoster
     1535554357762850817,   # Verified
 ]
+
+# Gradient color pairs (start, end) for each rank role — used when no Discord role icon is set
+ROLE_GRADIENTS: dict[int, tuple[tuple, tuple]] = {
+    1535553078852325506: ((0, 191, 165),   (0, 121, 107)),    # Founder:     teal
+    1535558010431340604: ((124, 58, 237),  (76, 29, 149)),    # Head Staff:  deep purple
+    1536740055643594782: ((249, 115, 22),  (194, 65, 12)),    # Staff:       orange
+    1535558108590383184: ((239, 68, 68),   (153, 27, 27)),    # Mod:         crimson
+    1535558050532827186: ((251, 79, 123),  (190, 24, 93)),    # Trial Mod:   rose
+    1535556016865808444: ((132, 204, 22),  (63, 98, 18)),     # Hoster:      lime
+    1535554357762850817: ((16, 185, 129),  (6, 95, 70)),      # Verified:    emerald
+}
 
 PVP_TIERS = [
     ("Master",   (255, 107, 107), (139,   0,   0)),
@@ -322,8 +334,14 @@ async def _build_card(
         role_x = icon_x + ICON_SZ + 10
         role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
         if role_icon:
+            grad_src = role_icon
+        else:
+            grad_pair = ROLE_GRADIENTS.get(top_role.id)
+            grad_src = _gradient_rect(grad_pair[0], grad_pair[1], 200, 4) if grad_pair else None
+
+        if grad_src is not None:
             _gradient_text(card, (role_x, role_y), top_role.name[:16], fn_role,
-                           role_icon, fallback_color=role_color)
+                           grad_src, fallback_color=role_color)
         else:
             d.text((role_x, role_y), top_role.name[:16], font=fn_role, fill=role_color)
 
