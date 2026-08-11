@@ -203,12 +203,13 @@ async def _build_card(
         row_col = tuple(int(BG[i] + (BG2[i] - BG[i]) * t) for i in range(3))
         d.line([(0, y), (W, y)], fill=(*row_col, 255))
 
-    # ── Rank icon watermark — full card height, half off right edge ───────────
+    # ── Rank icon watermark — 2× card height, half off right edge ────────────
     rank_icon = _load_rank_icon(pvp_rank)
     if rank_icon:
-        wm = rank_icon.resize((H, H), Image.LANCZOS)
+        WM = H * 2
+        wm = rank_icon.resize((WM, WM), Image.LANCZOS)
         wm = _apply_alpha(wm, 0.50)
-        card.paste(wm, (W - H // 2, 0), wm)
+        card.paste(wm, (W - WM // 2, (H - WM) // 2), wm)
 
     # ── Left accent strip ──────────────────────────────────────────────────
     d.rectangle([0, 0, 7, H], fill=(*accent, 255))
@@ -306,21 +307,29 @@ async def _build_card(
     pvp_rec = f"{pvp_wins} / {pvp_losses}" if (pvp_wins or pvp_losses) else "- / -"
     elo_str = str(pvp_elo) if pvp_elo else "-"
 
+    # Pre-calculate placement ring metrics so we know how much to push ELO/W-L right
+    ring_offset = 0
+    ring_cx = ring_cy = 0
+    matches_done = 0
+    if not pvp_placement_done:
+        matches_done = max(0, PLACEMENT_MATCHES - (pvp_placement_left or PLACEMENT_MATCHES))
+        rank_w, rank_h = _tsize(d, pvp_rank, fn_pvp)
+        ring_cx = CX + rank_w + 16 + 20
+        ring_cy = 220 + rank_h // 2 + 2
+        ring_right = ring_cx + 20 + 14              # right edge of ring + padding
+        col1_start = CX + COL_W
+        ring_offset = max(0, ring_right - col1_start)
+
     for i, (label, value, color) in enumerate([
         ("PvP Rank", pvp_rank, pvp_col),
         ("ELO",      elo_str,  WHITE),
         ("W / L",    pvp_rec,  WHITE),
     ]):
-        sx = CX + i * COL_W
+        sx = CX + i * COL_W + (ring_offset if i > 0 else 0)
         d.text((sx, 201), label, font=fn_label, fill=MUTED)
         d.text((sx, 220), value, font=fn_pvp,   fill=color)
 
-    # ── Placement ring (shown while still in placement) ────────────────────
     if not pvp_placement_done:
-        matches_done = max(0, PLACEMENT_MATCHES - (pvp_placement_left or PLACEMENT_MATCHES))
-        rank_w, rank_h = _tsize(d, pvp_rank, fn_pvp)
-        ring_cx = CX + rank_w + 16 + 20   # right of "Unranked" text + gap + radius
-        ring_cy = 220 + rank_h // 2 + 2   # vertically centred with rank text
         _draw_placement_ring(d, ring_cx, ring_cy, matches_done, accent=accent)
 
     # ── Render ─────────────────────────────────────────────────────────────
