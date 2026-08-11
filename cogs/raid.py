@@ -546,12 +546,12 @@ class FlaggedApprovalView(discord.ui.View):
         if not any(r.id in allowed for r in interaction.user.roles):
             try:
                 await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
         try:
             await interaction.response.defer()
-        except discord.NotFound:
+        except discord.HTTPException:
             return
         raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
         if not await self._load_from_db(raid_id or self.raid_id):
@@ -608,12 +608,12 @@ class FlaggedApprovalView(discord.ui.View):
         if not any(r.id in allowed for r in interaction.user.roles):
             try:
                 await interaction.response.send_message("❌ You do not have permission.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
         try:
             await interaction.response.defer()
-        except discord.NotFound:
+        except discord.HTTPException:
             return
         raid_id = interaction.message.embeds[0].fields[-1].value.strip("`") if self.raid_id is None else self.raid_id
         if not await self._load_from_db(raid_id or self.raid_id):
@@ -1361,7 +1361,7 @@ class JoinRaidView(discord.ui.View):
                     ephemeral=True
                 )
             await interaction.response.send_modal(JoinRaidModal())
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
 
@@ -1391,7 +1391,7 @@ class RaidControlView(discord.ui.View):
                 await interaction.response.send_modal(UpdateWaveModal())
             else:
                 await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
     @discord.ui.button(
@@ -1416,7 +1416,7 @@ class RaidControlView(discord.ui.View):
                 await interaction.response.send_modal(WaveEndModal())
             else:
                 await interaction.followup.send("⏰ Interaction expired. Please try again.", ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
 
@@ -1457,7 +1457,7 @@ class HosterInviteView(discord.ui.View):
                     )
             # Defer before async operations (update_setup_embed, DM send)
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # State updates
@@ -1547,7 +1547,7 @@ class HosterInviteView(discord.ui.View):
                 "❌ You have denied the hoster invite.",
                 ephemeral=True
             )
-        except discord.NotFound:
+        except discord.HTTPException:
             return
         try:
             host = interaction.client.get_user(self.host_id)
@@ -1589,7 +1589,7 @@ class StartRaidPanelView(discord.ui.View):
                     ephemeral=True
                 )
             await interaction.response.send_modal(StartRaidModal())
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
 

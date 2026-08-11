@@ -67,13 +67,13 @@ class TicketControlView(discord.ui.View):
         if interaction.user.id != self.user_id and not is_staff(interaction.user):
             try:
                 await interaction.response.send_message("❌ Only the ticket owner or staff can close this ticket.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
 
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # Update ticket status
@@ -132,13 +132,13 @@ class TicketControlView(discord.ui.View):
         if not is_staff(interaction.user):
             try:
                 await interaction.response.send_message("❌ Only staff can claim tickets.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
 
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # Check if ticket is already claimed
@@ -455,7 +455,7 @@ async def handle_ticket_creation(interaction: discord.Interaction, ticket_type: 
     """Handle ticket creation with modal — open modal immediately; duplicate check is inside on_submit."""
     try:
         await interaction.response.send_modal(TicketModal(ticket_type))
-    except discord.NotFound:
+    except discord.HTTPException:
         return
 
 

@@ -137,7 +137,7 @@ def _ensure_fonts() -> None:
     _base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
     fonts_dir = os.path.join(_base, "fonts")
     os.makedirs(fonts_dir, exist_ok=True)
-    _GH = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/"
+    _GH = "https://raw.githubusercontent.com/dejavu-fonts/dejavu-fonts/master/ttf/"
     downloads = {
         "bold.ttf":    _GH + "DejaVuSans-Bold.ttf",
         "regular.ttf": _GH + "DejaVuSans.ttf",

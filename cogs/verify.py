@@ -1497,7 +1497,7 @@ class VerifyPanelView(discord.ui.View):
                 view=VerifyMethodView(),
                 ephemeral=True
             )
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
 

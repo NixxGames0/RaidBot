@@ -147,7 +147,7 @@ class GiveawayTicketControlView(discord.ui.View):
                 view=ConfirmDeliverView(self.channel_id, self.giveaway_id),
                 ephemeral=True
             )
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
 
@@ -519,7 +519,7 @@ class GiveawayBuilderView(discord.ui.View):
                 await interaction.response.edit_message(embed=embed, view=self)
             else:
                 await interaction.edit_original_response(embed=embed, view=self)
-        except discord.NotFound:
+        except discord.HTTPException:
             await interaction.followup.send("⏰ Your session expired. Please start over.", ephemeral=True)
 
     def _check_user(self, interaction) -> bool:
@@ -928,7 +928,7 @@ class GiveawayPublicView(discord.ui.View):
     async def join_giveaway(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         row = await d1_query(
@@ -1228,7 +1228,7 @@ class Giveaway(commands.Cog):
             else:
                 await interaction.followup.send("Something went wrong, please try again.", ephemeral=True)
                 return
-        except discord.NotFound:
+        except discord.HTTPException:
             # Interaction expired, can't respond
             return
 

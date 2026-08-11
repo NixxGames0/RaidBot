@@ -64,7 +64,7 @@ class PSPanelView(discord.ui.View):
     async def get_code(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         member = interaction.user
@@ -171,7 +171,7 @@ class PSPanelView(discord.ui.View):
     async def release_code(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         member = interaction.user
@@ -240,7 +240,7 @@ class PSPanelView(discord.ui.View):
     async def reveal_code(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         member = interaction.user

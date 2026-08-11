@@ -154,7 +154,7 @@ class ShopPanelView(discord.ui.View):
                     ephemeral=True
                 )
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # Get shop items
@@ -492,13 +492,13 @@ class ShopOrderControlView(discord.ui.View):
         if not is_head_staff_or_founder(interaction.user):
             try:
                 await interaction.response.send_message("❌ Only Head Staff and Founder can complete orders.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
 
         try:
             await interaction.response.defer()
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # Get the channel
@@ -572,13 +572,13 @@ class ShopOrderControlView(discord.ui.View):
         if not is_head_staff_or_founder(interaction.user):
             try:
                 await interaction.response.send_message("❌ Only Head Staff and Founder can cancel orders.", ephemeral=True)
-            except discord.NotFound:
+            except discord.HTTPException:
                 pass
             return
 
         try:
             await interaction.response.defer()
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         # Get the channel

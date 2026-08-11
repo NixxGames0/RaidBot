@@ -370,7 +370,7 @@ async def safe_respond(interaction, *args, **kwargs):
             await interaction.response.send_message(*args, **kwargs)
         else:
             await interaction.followup.send(*args, **kwargs)
-    except discord.NotFound:
+    except discord.HTTPException:
         pass
 
 
@@ -526,7 +526,7 @@ class RoleBuilderView(discord.ui.View):
                 try:
                     await self.original_interaction.edit_original_response(embed=embed, view=self)
                     return
-                except discord.NotFound:
+                except discord.HTTPException:
                     # Token expired (>15 min) — let the user know
                     try:
                         await interaction.followup.send(
@@ -805,7 +805,7 @@ class CustomRolePanelView(discord.ui.View):
             if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
                 return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         existing = await get_custom_role(interaction.user.id)
@@ -839,7 +839,7 @@ class CustomRolePanelView(discord.ui.View):
                     ephemeral=True,
                 )
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         existing = await get_custom_role(interaction.user.id)
@@ -865,7 +865,7 @@ class CustomRolePanelView(discord.ui.View):
             if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
                 return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         existing = await get_custom_role(interaction.user.id)
@@ -891,7 +891,7 @@ class CustomRolePanelView(discord.ui.View):
             if not any(role.id in ELIGIBLE_ROLES for role in interaction.user.roles):
                 return await interaction.response.send_message("❌ You are not eligible.", ephemeral=True)
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         existing = await get_custom_role(interaction.user.id)
@@ -1008,7 +1008,7 @@ class CustomRoles(commands.Cog):
             else:
                 await interaction.followup.send("Something went wrong, please try again.", ephemeral=True)
                 return
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         if not is_staff(interaction.user):

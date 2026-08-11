@@ -1768,7 +1768,7 @@ class PvPPanelView(discord.ui.View):
                     "❌ You are already in the queue. Use `/pvpleave` to exit.", ephemeral=True)
 
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         err = await cog._check_queue_timeout(interaction.user.id)
@@ -1810,7 +1810,7 @@ class MatchTypeView(discord.ui.View):
         # Defer before D1 query to stay within the 3-second response window
         try:
             await interaction.response.defer(ephemeral=True)
-        except discord.NotFound:
+        except discord.HTTPException:
             return
 
         row = await d1_query(
