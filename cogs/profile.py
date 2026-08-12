@@ -597,7 +597,7 @@ class ProfileCog(commands.Cog):
         if top_role is None:
             _RANK_NAMES = {
                 "Founder", "Head Staff", "Staff", "Moderator", "Mod",
-                "Trial Mod", "Elite Hoster", "Hoster", "Trial Hoster", "Verified",
+                "Trial Mod", "Hoster", "Trial Hoster", "Verified",
             }
             top_role = next(
                 (r for r in sorted(target.roles, key=lambda r: r.position, reverse=True)
