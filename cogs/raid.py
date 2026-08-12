@@ -810,6 +810,10 @@ class JoinRaidModal(discord.ui.Modal, title="Join Raid"):
         guild_id = interaction.guild_id
         raid = get_raid(guild_id)
         if not raid:
+            raid = await get_active_raid_from_db(guild_id)
+            if raid:
+                raids[guild_id] = raid
+        if not raid:
             return await interaction.followup.send("❌ No active raid.", ephemeral=True)
         member = interaction.user
         roblox = self.roblox_name.value.strip()

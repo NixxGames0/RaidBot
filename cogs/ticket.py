@@ -2,9 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import io
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+
+from cogs.transcript import generate_transcript
 
 # Import shared functions from bot.py
 from bot import (
@@ -99,6 +102,15 @@ class TicketControlView(discord.ui.View):
 
         await interaction.message.edit(embed=embed, view=self)
 
+        # Generate transcript BEFORE deleting the channel
+        html_bytes = None
+        try:
+            html_bytes = await generate_transcript(
+                interaction.channel, interaction.guild, self.ticket_id
+            )
+        except Exception as e:
+            print(f"[Transcript] Error generating: {e}")
+
         # Delete the channel after 5 seconds
         try:
             await interaction.followup.send(
@@ -112,7 +124,22 @@ class TicketControlView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"Error deleting channel: {e}", ephemeral=True)
 
-        # Log the ticket closure
+        # Upload transcript file and get its URL
+        log_ch = interaction.client.get_channel(LOG_CHANNELS.get("tickets", 0))
+        transcript_url = None
+        if html_bytes and log_ch:
+            try:
+                f = discord.File(
+                    io.BytesIO(html_bytes),
+                    filename=f"ticket-{self.ticket_id}.html"
+                )
+                file_msg = await log_ch.send(file=f)
+                if file_msg.attachments:
+                    transcript_url = file_msg.attachments[0].url
+            except Exception as e:
+                print(f"[Transcript] Error uploading: {e}")
+
+        # Log the ticket closure with View Transcript button
         log_embed = discord.Embed(
             title="🔒 Ticket Closed",
             color=discord.Color.red(),
@@ -121,7 +148,52 @@ class TicketControlView(discord.ui.View):
         log_embed.add_field(name="Ticket ID", value=self.ticket_id, inline=True)
         log_embed.add_field(name="Closed By", value=interaction.user.mention, inline=True)
         log_embed.add_field(name="User", value=f"<@{self.user_id}>", inline=True)
-        await send_log(interaction.client, log_embed)
+        log_view = None
+        if transcript_url:
+            log_view = discord.ui.View()
+            log_view.add_item(discord.ui.Button(
+                label="View Transcript",
+                style=discord.ButtonStyle.link,
+                url=transcript_url,
+                emoji="📜"
+            ))
+        if log_ch:
+            try:
+                await log_ch.send(embed=log_embed, view=log_view)
+            except Exception as e:
+                print(f"[Ticket] Error sending log embed: {e}")
+
+        # DM the ticket opener with the transcript
+        opener = interaction.client.get_user(self.user_id)
+        if opener and html_bytes:
+            try:
+                dm_embed = discord.Embed(
+                    title="🔒 Your ticket has been closed",
+                    description=(
+                        f"Your support ticket **{self.ticket_id}** has been closed by "
+                        f"{interaction.user.mention}.\n\n"
+                        "Your transcript is attached below."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                dm_embed.set_footer(text=interaction.guild.name)
+                dm_file = discord.File(
+                    io.BytesIO(html_bytes),
+                    filename=f"ticket-{self.ticket_id}.html"
+                )
+                dm_view = None
+                if transcript_url:
+                    dm_view = discord.ui.View()
+                    dm_view.add_item(discord.ui.Button(
+                        label="View Transcript",
+                        style=discord.ButtonStyle.link,
+                        url=transcript_url,
+                        emoji="📜"
+                    ))
+                await opener.send(embed=dm_embed, file=dm_file, view=dm_view)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(
         label="📋 Claim Ticket",
