@@ -579,6 +579,13 @@ class ProfileCog(commands.Cog):
         top_role: discord.Role | None = next(
             (role_map[rid] for rid in RANK_PRIORITY if rid in role_map), None
         )
+        # Fallback: highest-position non-@everyone role
+        if top_role is None:
+            top_role = next(
+                (r for r in sorted(target.roles, key=lambda r: r.position, reverse=True)
+                 if r.name != "@everyone"),
+                None
+            )
 
         accent = (88, 101, 242)
         if top_role and top_role.color.value:

@@ -124,22 +124,10 @@ class TicketControlView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"Error deleting channel: {e}", ephemeral=True)
 
-        # Upload transcript file and get its URL
+        # Build the log embed
         log_ch = interaction.client.get_channel(LOG_CHANNELS.get("tickets", 0))
         transcript_url = None
-        if html_bytes and log_ch:
-            try:
-                f = discord.File(
-                    io.BytesIO(html_bytes),
-                    filename=f"ticket-{self.ticket_id}.html"
-                )
-                file_msg = await log_ch.send(file=f)
-                if file_msg.attachments:
-                    transcript_url = file_msg.attachments[0].url
-            except Exception as e:
-                print(f"[Transcript] Error uploading: {e}")
 
-        # Log the ticket closure with View Transcript button
         log_embed = discord.Embed(
             title="🔒 Ticket Closed",
             color=discord.Color.red(),
@@ -148,20 +136,26 @@ class TicketControlView(discord.ui.View):
         log_embed.add_field(name="Ticket ID", value=self.ticket_id, inline=True)
         log_embed.add_field(name="Closed By", value=interaction.user.mention, inline=True)
         log_embed.add_field(name="User", value=f"<@{self.user_id}>", inline=True)
-        log_view = None
-        if transcript_url:
-            log_view = discord.ui.View()
-            log_view.add_item(discord.ui.Button(
-                label="View Transcript",
-                style=discord.ButtonStyle.link,
-                url=transcript_url,
-                emoji="📜"
-            ))
+
+        # Send file + embed together so we always capture the attachment URL
         if log_ch:
             try:
-                await log_ch.send(embed=log_embed, view=log_view)
+                if html_bytes:
+                    log_file = discord.File(
+                        io.BytesIO(html_bytes),
+                        filename=f"ticket-{self.ticket_id}.html"
+                    )
+                    log_msg = await log_ch.send(embed=log_embed, file=log_file)
+                    if log_msg.attachments:
+                        transcript_url = log_msg.attachments[0].url
+                else:
+                    await log_ch.send(embed=log_embed)
             except Exception as e:
-                print(f"[Ticket] Error sending log embed: {e}")
+                print(f"[Ticket] Error sending log: {e}")
+                try:
+                    await log_ch.send(embed=log_embed)
+                except Exception:
+                    pass
 
         # DM the ticket opener with the transcript
         opener = interaction.client.get_user(self.user_id)
