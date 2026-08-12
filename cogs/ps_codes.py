@@ -1,376 +1,361 @@
+"""
+PS code management — unified /ps command group for both raid and PvP code pools.
+
+Raid pool  → `codes` table          (code, is_using, held_by, claimed_at, created_at)
+PvP pool   → `pvp_ps_codes` table   (code, match_id)
+"""
+
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
 
-# Import shared functions from bot.py
 from bot import (
-    d1_query, 
-    GUILD_ID,
-    FOUNDER_ROLE_ID,
-    HEAD_STAFF_ROLE_ID,
-    MOD_ROLE_ID,
-    TRIAL_MOD_ROLE_ID,
+    d1_query,
     LOG_CHANNELS,
     is_staff,
-    is_mod_or_higher,
-    is_head_staff_or_founder
+    is_head_staff_or_founder,
 )
 
-# ── Staff Roles ──────────────────────────────────────────────────────────────────
-STAFF_ROLES = {FOUNDER_ROLE_ID, HEAD_STAFF_ROLE_ID, MOD_ROLE_ID, TRIAL_MOD_ROLE_ID}
+TYPE_RAID = "raid"
+TYPE_PVP  = "pvp"
+
+TYPE_CHOICES = [
+    app_commands.Choice(name="Raid", value=TYPE_RAID),
+    app_commands.Choice(name="PvP",  value=TYPE_PVP),
+]
+
+TYPE_LABELS = {TYPE_RAID: "Raid", TYPE_PVP: "PvP"}
 
 
-async def send_log(bot: commands.Bot, embed: discord.Embed):
-    """Send a log message to the log channel"""
-    channel = bot.get_channel(LOG_CHANNELS.get("general", 0))
-    if channel:
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _log(bot: commands.Bot, embed: discord.Embed):
+    ch = bot.get_channel(LOG_CHANNELS.get("general", 0))
+    if ch:
         try:
-            await channel.send(embed=embed)
-        except Exception as e:
-            print(f"Error sending log: {e}")
+            await ch.send(embed=embed)
+        except Exception:
+            pass
 
+
+def _parse_codes(raw: str) -> list[str]:
+    return [c.strip().upper() for c in raw.split(",") if c.strip()]
+
+
+def _cap(text: str, limit: int = 1020) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def _pill(codes: list[str]) -> str:
+    return _cap("  ".join(f"`{c}`" for c in codes))
+
+
+# ── DB accessors ──────────────────────────────────────────────────────────────
+
+async def _raid_add(code: str) -> bool:
+    """Returns True if inserted, False if duplicate."""
+    check = await d1_query("SELECT code FROM codes WHERE code = ?", [code])
+    if check["results"]:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    await d1_query(
+        "INSERT INTO codes (code, is_using, held_by, claimed_at, created_at) VALUES (?, 0, NULL, NULL, ?)",
+        [code, now],
+    )
+    return True
+
+
+async def _pvp_add(code: str) -> bool:
+    check = await d1_query("SELECT code FROM pvp_ps_codes WHERE code = ?", [code])
+    if check["results"]:
+        return False
+    await d1_query("INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)", [code])
+    return True
+
+
+async def _raid_info(code: str) -> dict | None:
+    r = await d1_query("SELECT code, is_using, held_by FROM codes WHERE code = ?", [code])
+    return r["results"][0] if r["results"] else None
+
+
+async def _pvp_info(code: str) -> dict | None:
+    r = await d1_query("SELECT code, match_id FROM pvp_ps_codes WHERE code = ?", [code])
+    return r["results"][0] if r["results"] else None
+
+
+async def _raid_delete(code: str):
+    await d1_query("DELETE FROM codes WHERE code = ?", [code])
+
+
+async def _pvp_delete(code: str):
+    await d1_query("DELETE FROM pvp_ps_codes WHERE code = ?", [code])
+
+
+async def _raid_force_delete(bot: commands.Bot, code: str, held_by: str | None):
+    if held_by:
+        user_row = await d1_query("SELECT ps_codes FROM users WHERE discord_id = ?", [held_by])
+        if user_row["results"]:
+            current = json.loads(user_row["results"][0]["ps_codes"] or "[]")
+            if code in current:
+                current.remove(code)
+                await d1_query(
+                    "UPDATE users SET ps_codes = ?, updated_at = ? WHERE discord_id = ?",
+                    [json.dumps(current), datetime.now(timezone.utc).isoformat(), held_by],
+                )
+    await d1_query("DELETE FROM codes WHERE code = ?", [code])
+
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
 
 class PSCodes(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        print("✅ PS Codes cog initialized")
 
-    @app_commands.command(
-        name="addps",
-        description="Add one or more PS codes to the database (Head Staff+)"
-    )
-    @app_commands.describe(codes="Comma-separated PS codes to add")
-    @app_commands.checks.cooldown(1, 5)
-    async def addps(self, interaction: discord.Interaction, codes: str):
+    ps = app_commands.Group(name="ps", description="PS code pool management (Staff)")
+
+    # ── /ps add ───────────────────────────────────────────────────────────────
+
+    @ps.command(name="add", description="Add one or more PS codes to the raid or PvP pool (Head Staff+)")
+    @app_commands.describe(type="Which pool to add to", codes="Comma-separated codes")
+    @app_commands.choices(type=TYPE_CHOICES)
+    async def ps_add(self, interaction: discord.Interaction, type: str, codes: str):
         if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ Head Staff+ only.", ephemeral=True)
 
-        items = [c.strip().upper() for c in codes.split(",") if c.strip()]
+        items = _parse_codes(codes)
         if not items:
-            return await interaction.response.send_message(
-                "❌ Please provide at least one valid code.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ No valid codes provided.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
 
         added, dupes = [], []
-        now = datetime.now(timezone.utc).isoformat()
         for code in items:
-            try:
-                check = await d1_query("SELECT code FROM codes WHERE code = ?", [code])
-                if check["results"]:
-                    dupes.append(code)
-                    continue
-                await d1_query(
-                    "INSERT INTO codes (code, is_using, held_by, claimed_at, created_at) VALUES (?, 0, NULL, NULL, ?)",
-                    [code, now]
-                )
-                added.append(code)
-            except Exception as e:
-                print(f"Error in addps for {code}: {e}")
+            ok = await (_pvp_add(code) if type == TYPE_PVP else _raid_add(code))
+            (added if ok else dupes).append(code)
 
-        lines = []
+        label = TYPE_LABELS[type]
+        embed = discord.Embed(
+            title=f"📥 PS Codes — Add ({label})",
+            color=discord.Color.green() if added else discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
         if added:
-            lines.append("✅ Added: " + ", ".join(f"`{c}`" for c in added))
+            embed.add_field(name=f"✅ Added ({len(added)})", value=_pill(added), inline=False)
         if dupes:
-            lines.append("⚠️ Already existed: " + ", ".join(f"`{c}`" for c in dupes))
-        await interaction.followup.send("\n".join(lines) or "❌ No codes processed.", ephemeral=True)
+            embed.add_field(name=f"⚠️ Already in pool ({len(dupes)})", value=_pill(dupes), inline=False)
+        embed.set_footer(text=f"By {interaction.user.display_name} · {label} pool")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
         if added:
-            embed = discord.Embed(
-                title="📥 PS Codes Added",
-                description=", ".join(f"`{c}`" for c in added),
+            log = discord.Embed(
+                title=f"📥 PS Codes Added — {label}",
+                description=_pill(added),
                 color=discord.Color.green(),
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
             )
-            embed.add_field(name="Added By", value=interaction.user.mention, inline=True)
-            embed.set_footer(text=f"User ID: {interaction.user.id}")
-            await send_log(self.bot, embed)
+            log.add_field(name="By", value=interaction.user.mention)
+            await _log(self.bot, log)
 
-    @app_commands.command(
-        name="delps",
-        description="Delete one or more PS codes from the database (Head Staff+)"
-    )
-    @app_commands.describe(codes="Comma-separated PS codes to delete")
-    @app_commands.checks.cooldown(1, 5)
-    async def delps(self, interaction: discord.Interaction, codes: str):
+    # ── /ps remove ────────────────────────────────────────────────────────────
+
+    @ps.command(name="remove", description="Remove PS codes from the raid or PvP pool (Head Staff+)")
+    @app_commands.describe(type="Which pool to remove from", codes="Comma-separated codes")
+    @app_commands.choices(type=TYPE_CHOICES)
+    async def ps_remove(self, interaction: discord.Interaction, type: str, codes: str):
         if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ Head Staff+ only.", ephemeral=True)
 
-        items = [c.strip().upper() for c in codes.split(",") if c.strip()]
+        items = _parse_codes(codes)
         if not items:
-            return await interaction.response.send_message(
-                "❌ Please provide at least one valid code.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ No valid codes provided.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
 
         removed, in_use, missing = [], [], []
+
         for code in items:
-            try:
-                check = await d1_query(
-                    "SELECT code, is_using, held_by FROM codes WHERE code = ?", [code]
-                )
-                if not check["results"]:
+            if type == TYPE_PVP:
+                row = await _pvp_info(code)
+                if not row:
+                    missing.append(code)
+                elif row["match_id"]:
+                    in_use.append((code, f"match `{row['match_id']}`"))
+                else:
+                    await _pvp_delete(code)
+                    removed.append(code)
+            else:
+                row = await _raid_info(code)
+                if not row:
+                    missing.append(code)
+                elif row["is_using"]:
+                    in_use.append((code, f"<@{row['held_by']}>"))
+                else:
+                    await _raid_delete(code)
+                    removed.append(code)
+
+        label = TYPE_LABELS[type]
+        embed = discord.Embed(
+            title=f"🗑️ PS Codes — Remove ({label})",
+            color=discord.Color.red() if removed else discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if removed:
+            embed.add_field(name=f"✅ Removed ({len(removed)})", value=_pill(removed), inline=False)
+        if in_use:
+            lines = [f"`{c}` — in use by {h}" for c, h in in_use]
+            embed.add_field(
+                name=f"🔒 In Use — skipped ({len(in_use)})",
+                value=_cap("\n".join(lines)),
+                inline=False,
+            )
+            embed.set_footer(text="Use /ps force to remove codes that are in use.")
+        if missing:
+            embed.add_field(name=f"❌ Not Found ({len(missing)})", value=_pill(missing), inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        if removed:
+            log = discord.Embed(
+                title=f"🗑️ PS Codes Removed — {label}",
+                description=_pill(removed),
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            log.add_field(name="By", value=interaction.user.mention)
+            await _log(self.bot, log)
+
+    # ── /ps force ─────────────────────────────────────────────────────────────
+
+    @ps.command(name="force", description="Force-remove codes even if in use (Head Staff+)")
+    @app_commands.describe(type="Which pool to target", codes="Comma-separated codes")
+    @app_commands.choices(type=TYPE_CHOICES)
+    async def ps_force(self, interaction: discord.Interaction, type: str, codes: str):
+        if not is_head_staff_or_founder(interaction.user):
+            return await interaction.response.send_message("❌ Head Staff+ only.", ephemeral=True)
+
+        items = _parse_codes(codes)
+        if not items:
+            return await interaction.response.send_message("❌ No valid codes provided.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        removed, missing = [], []
+
+        for code in items:
+            if type == TYPE_PVP:
+                row = await _pvp_info(code)
+                if not row:
                     missing.append(code)
                     continue
-                row = check["results"][0]
-                if row["is_using"]:
-                    in_use.append(f"`{code}` (held by <@{row['held_by']}>)")
-                    continue
-                await d1_query("DELETE FROM codes WHERE code = ?", [code])
-                removed.append(code)
-            except Exception as e:
-                print(f"Error in delps for {code}: {e}")
-
-        lines = []
-        if removed:
-            lines.append("🗑️ Removed: " + ", ".join(f"`{c}`" for c in removed))
-        if in_use:
-            lines.append("⚠️ In use (use `/forceps` to force remove): " + ", ".join(in_use))
-        if missing:
-            lines.append("❌ Not found: " + ", ".join(f"`{c}`" for c in missing))
-        await interaction.followup.send("\n".join(lines) or "❌ No codes processed.", ephemeral=True)
-
-        if removed:
-            embed = discord.Embed(
-                title="📤 PS Codes Removed",
-                description=", ".join(f"`{c}`" for c in removed),
-                color=discord.Color.red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Removed By", value=interaction.user.mention, inline=True)
-            embed.set_footer(text=f"User ID: {interaction.user.id}")
-            await send_log(self.bot, embed)
-
-    @app_commands.command(
-        name="forceps",
-        description="Forcefully remove a PS code (even if in use) (Head Staff+)"
-    )
-    @app_commands.describe(code="The PS code to force remove")
-    @app_commands.checks.cooldown(1, 10)
-    async def forceps(self, interaction: discord.Interaction, code: str):
-        # Head Staff+ only
-        if not is_head_staff_or_founder(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.",
-                ephemeral=True
-            )
-
-        code = code.strip().upper()
-        if not code:
-            return await interaction.response.send_message(
-                "❌ Please provide a valid code.",
-                ephemeral=True
-            )
-
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            # Check if code exists
-            check = await d1_query(
-                "SELECT code, is_using, held_by FROM codes WHERE code = ?",
-                [code]
-            )
-
-            if not check["results"]:
-                return await interaction.followup.send(
-                    f"⚠️ Code `{code}` not found in the database.",
-                    ephemeral=True
-                )
-
-            row = check["results"][0]
-            held_by = row["held_by"]
-
-            # If code is in use, remove it from the user's ps_codes
-            if row["is_using"] and held_by:
-                user_result = await d1_query(
-                    "SELECT ps_codes FROM users WHERE discord_id = ?",
-                    [held_by]
-                )
-
-                if user_result["results"]:
-                    import json
-                    current_codes = json.loads(user_result["results"][0]["ps_codes"] or "[]")
-                    if code in current_codes:
-                        current_codes.remove(code)
-                        now = datetime.now(timezone.utc).isoformat()
-                        await d1_query(
-                            "UPDATE users SET ps_codes = ?, updated_at = ? WHERE discord_id = ?",
-                            [json.dumps(current_codes), now, held_by]
-                        )
-
-            # Delete the code
-            await d1_query(
-                "DELETE FROM codes WHERE code = ?",
-                [code]
-            )
-
-            await interaction.followup.send(
-                f"🔨 Force removed code `{code}`."
-                + (f" (was held by <@{held_by}>)" if held_by else ""),
-                ephemeral=True
-            )
-
-            # Log the force removal
-            embed = discord.Embed(
-                title="🔨 PS Code Force Removed",
-                description=f"Code: `{code}`",
-                color=discord.Color.dark_red(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Removed By", value=interaction.user.mention, inline=True)
-            if held_by:
-                embed.add_field(name="Previously Held By", value=f"<@{held_by}>", inline=True)
-            embed.set_footer(text=f"User ID: {interaction.user.id}")
-            await send_log(self.bot, embed)
-
-        except Exception as e:
-            print(f"Error in forceps: {e}")
-            await interaction.followup.send(
-                f"❌ Error force removing code: {str(e)[:100]}",
-                ephemeral=True
-            )
-
-    @app_commands.command(
-        name="pslist",
-        description="List all PS codes in the database (Staff only)"
-    )
-    @app_commands.checks.cooldown(1, 10)
-    async def pslist(self, interaction: discord.Interaction):
-        # Staff only
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.",
-                ephemeral=True
-            )
-
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            result = await d1_query(
-                "SELECT code, is_using, held_by FROM codes ORDER BY created_at ASC"
-            )
-            rows = result["results"]
-
-            if not rows:
-                return await interaction.followup.send(
-                    "📭 No PS codes in the database.",
-                    ephemeral=True
-                )
-
-            available = []
-            in_use = []
-
-            for row in rows:
-                if row["is_using"]:
-                    in_use.append(f"`{row['code']}` — <@{row['held_by']}>")
-                else:
-                    available.append(f"`{row['code']}`")
-
-            embed = discord.Embed(
-                title="📋 PS Code List",
-                color=discord.Color.blurple(),
-                timestamp=datetime.now(timezone.utc)
-            )
-
-            if available:
-                embed.add_field(
-                    name=f"✅ Available ({len(available)})",
-                    value="\n".join(available[:25]) + (f"\n... and {len(available) - 25} more" if len(available) > 25 else ""),
-                    inline=False
-                )
+                match_id = row.get("match_id")
+                await _pvp_delete(code)
+                removed.append((code, f"match `{match_id}`" if match_id else None))
             else:
-                embed.add_field(name="✅ Available", value="No available codes", inline=False)
+                row = await _raid_info(code)
+                if not row:
+                    missing.append(code)
+                    continue
+                held_by = row.get("held_by")
+                await _raid_force_delete(self.bot, code, held_by)
+                removed.append((code, f"<@{held_by}>" if held_by else None))
+
+        label = TYPE_LABELS[type]
+        embed = discord.Embed(
+            title=f"🔨 PS Codes — Force Remove ({label})",
+            color=discord.Color.dark_red() if removed else discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        if removed:
+            lines = [f"`{c}`" + (f" — was held by {h}" if h else "") for c, h in removed]
+            embed.add_field(
+                name=f"✅ Force Removed ({len(removed)})",
+                value=_cap("\n".join(lines)),
+                inline=False,
+            )
+        if missing:
+            embed.add_field(name=f"❌ Not Found ({len(missing)})", value=_pill(missing), inline=False)
+        embed.set_footer(text=f"By {interaction.user.display_name} · {label} pool")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        if removed:
+            log = discord.Embed(
+                title=f"🔨 PS Codes Force Removed — {label}",
+                description=_cap("\n".join(
+                    f"`{c}`" + (f" — held by {h}" if h else "") for c, h in removed
+                )),
+                color=discord.Color.dark_red(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            log.add_field(name="By", value=interaction.user.mention)
+            await _log(self.bot, log)
+
+    # ── /ps list ──────────────────────────────────────────────────────────────
+
+    @ps.command(name="list", description="View PS code pools (Staff+)")
+    @app_commands.describe(type="Filter by pool — leave blank to show both")
+    @app_commands.choices(type=TYPE_CHOICES)
+    async def ps_list(self, interaction: discord.Interaction, type: str | None = None):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        pools = [type] if type else [TYPE_RAID, TYPE_PVP]
+        embed = discord.Embed(
+            title="🎮 PS Code Pools",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        for pool in pools:
+            label = TYPE_LABELS[pool]
+
+            if pool == TYPE_PVP:
+                res  = await d1_query("SELECT code, match_id FROM pvp_ps_codes ORDER BY code")
+                rows = res.get("results", [])
+                avail   = [r["code"] for r in rows if not r["match_id"]]
+                in_use  = [(r["code"], r["match_id"]) for r in rows if r["match_id"]]
+            else:
+                res  = await d1_query("SELECT code, is_using, held_by FROM codes ORDER BY code")
+                rows = res.get("results", [])
+                avail   = [r["code"] for r in rows if not r["is_using"]]
+                in_use  = [(r["code"], r["held_by"]) for r in rows if r["is_using"]]
+
+            total     = len(rows)
+            usage_pct = f"{int(len(in_use) / total * 100)}%" if total else "0%"
+
+            header = (
+                f"**{label} Pool** — {total} total · "
+                f"{len(avail)} available · {len(in_use)} in use · {usage_pct} utilisation"
+            )
+
+            avail_body = _cap("  ".join(f"`{c}`" for c in avail)) if avail else "*None*"
+            embed.add_field(
+                name=f"✅ {label} — Available ({len(avail)})",
+                value=avail_body,
+                inline=False,
+            )
 
             if in_use:
+                if pool == TYPE_PVP:
+                    lines = [f"`{c}` → match `{m}`" for c, m in in_use]
+                else:
+                    lines = [f"`{c}` → <@{h}>" for c, h in in_use]
                 embed.add_field(
-                    name=f"🔴 In Use ({len(in_use)})",
-                    value="\n".join(in_use[:25]) + (f"\n... and {len(in_use) - 25} more" if len(in_use) > 25 else ""),
-                    inline=False
+                    name=f"🔴 {label} — In Use ({len(in_use)})",
+                    value=_cap("\n".join(lines)),
+                    inline=False,
                 )
-            else:
-                embed.add_field(name="🔴 In Use", value="No codes in use", inline=False)
 
-            embed.set_footer(text=f"Total: {len(rows)} codes")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            # Separator between pools when showing both
+            if len(pools) > 1 and pool == TYPE_RAID:
+                embed.add_field(name="​", value=f"**{header}**", inline=False)
 
-        except Exception as e:
-            print(f"Error in pslist: {e}")
-            await interaction.followup.send(
-                f"❌ Error listing codes: {str(e)[:100]}",
-                ephemeral=True
-            )
-
-    @app_commands.command(
-        name="psstats",
-        description="Get statistics about PS codes (Staff only)"
-    )
-    @app_commands.checks.cooldown(1, 30)
-    async def psstats(self, interaction: discord.Interaction):
-        # Staff only
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.",
-                ephemeral=True
-            )
-
-        await interaction.response.defer(ephemeral=True)
-
-        try:
-            # Get total codes
-            total_result = await d1_query("SELECT COUNT(*) as count FROM codes")
-            total = total_result["results"][0]["count"] if total_result["results"] else 0
-
-            # Get available codes
-            avail_result = await d1_query("SELECT COUNT(*) as count FROM codes WHERE is_using = 0")
-            available = avail_result["results"][0]["count"] if avail_result["results"] else 0
-
-            # Get in-use codes
-            inuse_result = await d1_query("SELECT COUNT(*) as count FROM codes WHERE is_using = 1")
-            in_use = inuse_result["results"][0]["count"] if inuse_result["results"] else 0
-
-            # Get recent additions (last 7 days)
-            from datetime import timedelta
-            week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-            recent_result = await d1_query(
-                "SELECT COUNT(*) as count FROM codes WHERE created_at > ?",
-                [week_ago]
-            )
-            recent = recent_result["results"][0]["count"] if recent_result["results"] else 0
-
-            embed = discord.Embed(
-                title="📊 PS Code Statistics",
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Total Codes", value=f"**{total}**", inline=True)
-            embed.add_field(name="Available", value=f"✅ **{available}**", inline=True)
-            embed.add_field(name="In Use", value=f"🔴 **{in_use}**", inline=True)
-            embed.add_field(name="Added in Last 7 Days", value=f"📈 **{recent}**", inline=True)
-
-            if total > 0:
-                usage_pct = int((in_use / total) * 100)
-                embed.add_field(name="Usage Rate", value=f"{usage_pct}%", inline=True)
-
-            embed.set_footer(text=f"Guild: {interaction.guild.name}")
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        except Exception as e:
-            print(f"Error in psstats: {e}")
-            await interaction.followup.send(
-                f"❌ Error getting statistics: {str(e)[:100]}",
-                ephemeral=True
-            )
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
-    """Setup function for the cog"""
     await bot.add_cog(PSCodes(bot))
-    print("✅ PS Codes cog setup complete")
+    print("✅ PS Codes cog loaded")
