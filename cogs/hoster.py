@@ -20,7 +20,7 @@ from bot import (
     HOSTER_ROLE_ID,
     ELITE_HOSTER_ROLE_ID,
     TOP_HOSTER_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     STAFF_ROLES,
     is_hoster,
     is_elite_hoster,
@@ -56,7 +56,7 @@ def progress_bar(current: int, needed: int, length: int = 12) -> str:
 # ── Logging Helper ───────────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the log channel"""
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("raids", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -723,7 +723,7 @@ class Hoster(commands.Cog):
                 inline=True
             )
 
-        channel = self.bot.get_channel(LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("raids", 0))
         if channel:
             await channel.send(embed=embed)
 

@@ -17,7 +17,6 @@ except ImportError:
 from bot import (
     d1_query,
     GUILD_ID,
-    LOG_CHANNEL_ID,
     BOOSTER_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
     FOUNDER_ROLE_ID,

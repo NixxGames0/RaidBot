@@ -7,14 +7,10 @@ from datetime import datetime, timezone
 from bot import (
     d1_query,
     GUILD_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_staff,
     is_head_staff_or_founder
 )
-
-# ── Channel IDs ──────────────────────────────────────────────────────────────
-MEMBER_LOG_CHANNEL_ID = 1535994819183251556
-MESSAGE_LOG_CHANNEL_ID = 1535995158531801179
 
 
 class Logger(commands.Cog):
@@ -30,7 +26,7 @@ class Logger(commands.Cog):
         if member.guild.id != GUILD_ID:
             return
 
-        channel = self.bot.get_channel(MEMBER_LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("members", 0))
         if not channel:
             return
 
@@ -71,7 +67,7 @@ class Logger(commands.Cog):
         if member.guild.id != GUILD_ID:
             return
 
-        channel = self.bot.get_channel(MEMBER_LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("members", 0))
         if not channel:
             return
 
@@ -123,7 +119,7 @@ class Logger(commands.Cog):
         if message.guild.id != GUILD_ID:
             return
 
-        channel = self.bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("messages", 0))
         if not channel:
             return
 
@@ -178,7 +174,7 @@ class Logger(commands.Cog):
         if guild.id != GUILD_ID:
             return
 
-        channel = self.bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("messages", 0))
         if not channel:
             return
 
@@ -239,7 +235,7 @@ class Logger(commands.Cog):
         if before.guild.id != GUILD_ID:
             return
 
-        channel = self.bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+        channel = self.bot.get_channel(LOG_CHANNELS.get("messages", 0))
         if not channel:
             return
 
@@ -302,18 +298,18 @@ class Logger(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         try:
-            member_channel = self.bot.get_channel(MEMBER_LOG_CHANNEL_ID)
-            message_channel = self.bot.get_channel(MESSAGE_LOG_CHANNEL_ID)
+            member_channel = self.bot.get_channel(LOG_CHANNELS.get("members", 0))
+            message_channel = self.bot.get_channel(LOG_CHANNELS.get("messages", 0))
 
             if not member_channel:
                 return await interaction.followup.send(
-                    f"❌ Member log channel <#{MEMBER_LOG_CHANNEL_ID}> not found.",
+                    "❌ Member log channel not found — run `/setuplogs` first.",
                     ephemeral=True
                 )
 
             if not message_channel:
                 return await interaction.followup.send(
-                    f"❌ Message log channel <#{MESSAGE_LOG_CHANNEL_ID}> not found.",
+                    "❌ Message log channel not found — run `/setuplogs` first.",
                     ephemeral=True
                 )
 

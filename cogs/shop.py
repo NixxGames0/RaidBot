@@ -14,7 +14,7 @@ from bot import (
     MOD_ROLE_ID,
     TRIAL_MOD_ROLE_ID,
     LINKED_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_hoster,
     is_elite_hoster,
     is_staff,
@@ -27,7 +27,6 @@ from bot import (
 # ── Channel IDs ──────────────────────────────────────────────────────────────
 SHOP_PANEL_CHANNEL_ID = 1535562484788891658
 SHOP_ORDER_CATEGORY_ID = 1535922322974838824
-SHOP_LOG_CHANNEL_ID = 1535644998895272056
 
 # ── Staff Roles ──────────────────────────────────────────────────────────────
 STAFF_ROLES = {
@@ -41,7 +40,7 @@ STAFF_ROLES = {
 # ── Logging Helper ───────────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the shop log channel"""
-    channel = bot.get_channel(SHOP_LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("shop", 0))
     if channel:
         try:
             await channel.send(embed=embed)

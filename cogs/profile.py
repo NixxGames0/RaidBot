@@ -233,7 +233,7 @@ def _rrect(draw: ImageDraw.ImageDraw, bbox, radius: int, fill):
         draw.rectangle(bbox, fill=fill)
 
 # ── Card constants ─────────────────────────────────────────────────────────────
-W, H        = 960, 290
+W, H        = 960, 310
 BG          = (13, 17, 23)
 BG2         = (22, 27, 34)
 MUTED       = (110, 118, 129)
@@ -243,13 +243,13 @@ SEP         = (33, 40, 50)
 AV_SIZE     = 140
 AV_X, AV_Y = 18, (H - AV_SIZE) // 2
 
-# Font sizes — intentionally large so they're legible in Discord
-SZ_NAME  = 38   # username
-SZ_ROLE  = 28   # role name (slightly smaller than username)
-SZ_SUB   = 18   # sub-line
-SZ_LABEL = 15   # stat column labels
-SZ_VAL   = 28   # stat values
-SZ_PVP   = 24   # PvP row values
+# Font sizes — scaled for Discord's ~50% image compression
+SZ_NAME  = 44   # username
+SZ_ROLE  = 32   # role name (same line as username, slightly smaller)
+SZ_SUB   = 22   # sub-line / XP info
+SZ_LABEL = 19   # stat column labels
+SZ_VAL   = 32   # stat values
+SZ_PVP   = 28   # PvP row values
 
 _prewarm_fonts()
 
@@ -458,7 +458,7 @@ async def _build_card(
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
     d.text(
-        (CX, 60),
+        (CX, 72),
         f"Level {level}  \xb7  {rank_str} Global  \xb7  Member for {tenure}  \xb7  {exp:,} XP",
         font=fn_sub,
         fill=MUTED,
@@ -471,7 +471,7 @@ async def _build_card(
     prog    = max(0, exp - xp_cur)
     pct     = min(100, int(prog / needed * 100)) if needed else 100
 
-    BAR_X, BAR_Y = CX, 92
+    BAR_X, BAR_Y = CX, 104
     BAR_W = COL_W * 3 - 10
     BAR_H = 14
 
@@ -484,7 +484,7 @@ async def _build_card(
            font=_font(SZ_LABEL, bold=True), fill=MUTED)
 
     # ── Divider 1 ──────────────────────────────────────────────────────────
-    d.line([(CX, 122), (W - 18, 122)], fill=SEP, width=1)
+    d.line([(CX, 138), (W - 18, 138)], fill=SEP, width=1)
 
     # ── Hoster stat columns ────────────────────────────────────────────────
     for i, (label, value) in enumerate([
@@ -493,11 +493,11 @@ async def _build_card(
         ("Raids Hosted",    f"{raids:,}"),
     ]):
         sx = CX + i * COL_W
-        d.text((sx, 130), label, font=fn_label, fill=MUTED)
-        d.text((sx, 149), value, font=fn_val,   fill=WHITE)
+        d.text((sx, 148), label, font=fn_label, fill=MUTED)
+        d.text((sx, 168), value, font=fn_val,   fill=WHITE)
 
     # ── Divider 2 ──────────────────────────────────────────────────────────
-    d.line([(CX, 193), (W - 18, 193)], fill=SEP, width=1)
+    d.line([(CX, 215), (W - 18, 215)], fill=SEP, width=1)
 
     # ── PvP row ────────────────────────────────────────────────────────────
     pvp_col, _ = _pvp_rank_colors(pvp_rank)
@@ -512,7 +512,7 @@ async def _build_card(
         matches_done = max(0, PLACEMENT_MATCHES - (pvp_placement_left or PLACEMENT_MATCHES))
         rank_w, rank_h = _tsize(d, pvp_rank, fn_pvp)
         ring_cx = CX + rank_w + 16 + 20
-        ring_cy = 220 + rank_h // 2 + 2
+        ring_cy = 244 + rank_h // 2 + 2
         ring_right = ring_cx + 20 + 14              # right edge of ring + padding
         col1_start = CX + COL_W
         ring_offset = max(0, ring_right - col1_start) + 45
@@ -523,8 +523,8 @@ async def _build_card(
         ("W / L",    pvp_rec,  WHITE),
     ]):
         sx = CX + i * COL_W + (ring_offset if i > 0 else 0)
-        d.text((sx, 201), label, font=fn_label, fill=MUTED)
-        d.text((sx, 220), value, font=fn_pvp,   fill=color)
+        d.text((sx, 224), label, font=fn_label, fill=MUTED)
+        d.text((sx, 244), value, font=fn_pvp,   fill=color)
 
     if pvp_rank == "Unranked" and not pvp_placement_done:
         _draw_placement_ring(d, ring_cx, ring_cy, matches_done, accent=accent)

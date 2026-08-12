@@ -18,7 +18,7 @@ from bot import (
     HEAD_STAFF_ROLE_ID,
     MOD_ROLE_ID,
     TRIAL_MOD_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_verified,
     is_linked,
     is_staff,
@@ -74,7 +74,7 @@ RHVERIF_GAME_NAME = "RHVerif"
 # ── Logging Helper ───────────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the main log channel"""
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("verification", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -1439,7 +1439,7 @@ async def _finalize_game_verification(bot: commands.Bot, member: discord.Member,
     )
     main_embed.add_field(name="Roblox", value=f"`{roblox}`", inline=True)
 
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    log_channel = bot.get_channel(LOG_CHANNELS.get("verification", 0))
     if log_channel:
         try:
             await log_channel.send(embed=main_embed)

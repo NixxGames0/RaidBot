@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 from bot import (
     d1_query,
     GUILD_ID,
+    LOG_CHANNELS,
     MOD_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
     FOUNDER_ROLE_ID,
@@ -1657,13 +1658,11 @@ class PvPCog(commands.Cog):
 
         # Log to audit channel (best-effort)
         try:
-            row = await d1_query("SELECT value FROM bot_meta WHERE key = 'log_channel_id'")
-            if row["results"]:
-                log_ch = interaction.guild.get_channel(int(row["results"][0]["value"]))
-                if log_ch:
-                    await log_ch.send(
-                        f"[PvP ELO] {interaction.user.mention} set {user.mention}'s ELO → **{elo}** | {reason}"
-                    )
+            log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("pvp", 0))
+            if log_ch:
+                await log_ch.send(
+                    f"[PvP ELO] {interaction.user.mention} set {user.mention}'s ELO → **{elo}** | {reason}"
+                )
         except Exception:
             pass
 

@@ -9,11 +9,11 @@ from bot import (
     GUILD_ID,
     FOUNDER_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
+    LOG_CHANNELS,
 )
 
 TRIAL_HOSTER_ROLE_ID = 1537019401847439410
 HOSTER_ROLE_ID = 1535556016865808444
-LOG_CHANNEL_ID = 1535570717993865297
 
 TRIAL_DURATION = 7 * 24 * 3600
 POINTS_REQUIRED = 100
@@ -179,7 +179,7 @@ class TrialHoster(commands.Cog):
         except discord.HTTPException:
             pass
 
-        log_ch = guild.get_channel(LOG_CHANNEL_ID)
+        log_ch = guild.get_channel(LOG_CHANNELS.get("trial_hoster", 0))
         if log_ch:
             embed = discord.Embed(
                 title="🎯 Trial Hoster Given",
@@ -199,7 +199,7 @@ class TrialHoster(commands.Cog):
     async def _promote(self, guild: discord.Guild, member: discord.Member, trial_pts: int):
         trial_role = guild.get_role(TRIAL_HOSTER_ROLE_ID)
         hoster_role = guild.get_role(HOSTER_ROLE_ID)
-        log_ch = guild.get_channel(LOG_CHANNEL_ID)
+        log_ch = guild.get_channel(LOG_CHANNELS.get("trial_hoster", 0))
 
         try:
             if trial_role and trial_role in member.roles:
@@ -239,7 +239,7 @@ class TrialHoster(commands.Cog):
 
     async def _expire(self, guild: discord.Guild, member: discord.Member, trial_pts: int):
         trial_role = guild.get_role(TRIAL_HOSTER_ROLE_ID)
-        log_ch = guild.get_channel(LOG_CHANNEL_ID)
+        log_ch = guild.get_channel(LOG_CHANNELS.get("trial_hoster", 0))
 
         try:
             if trial_role and trial_role in member.roles:
@@ -369,7 +369,7 @@ class TrialHoster(commands.Cog):
         except discord.HTTPException:
             pass
 
-        log_ch = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("trial_hoster", 0))
         if log_ch:
             embed = discord.Embed(
                 title="🗑️ Trial Hoster Removed",

@@ -11,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 from bot import (
     d1_query,
     GUILD_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     VERIFIED_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
     FOUNDER_ROLE_ID,
@@ -24,7 +24,7 @@ from bot import (
 # ─── Constants ──────────────────────────────────────────────
 GIVEAWAY_HOST_ROLE_ID = 1536325001584578621
 GIVEAWAY_PING_ROLE_ID = 1536324869422063626
-GIVEAWAY_LOG_CHANNEL_ID = 1536329270354378783
+
 TICKET_CATEGORY_ID = 1535905899854430222
 DEFAULT_WINNERS = 1
 
@@ -76,7 +76,7 @@ async def init_giveaway_db():
 
 # ─── Helper functions ──────────────────────────────────────
 async def log_giveaway(bot: commands.Bot, embed: discord.Embed):
-    channel = bot.get_channel(GIVEAWAY_LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("giveaways", 0))
     if channel:
         try:
             await channel.send(embed=embed)

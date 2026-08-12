@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from bot import (
     d1_query,
     GUILD_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     MOD_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
     FOUNDER_ROLE_ID,
@@ -95,7 +95,7 @@ async def _log_action(
     duration: str | None = None,
     expires_at: str | None = None,
 ):
-    channel = guild.get_channel(LOG_CHANNEL_ID)
+    channel = guild.get_channel(LOG_CHANNELS.get("moderation", 0))
     if not channel:
         return
 

@@ -18,7 +18,7 @@ from bot import (
     BLACKLIST_ROLE_ID,
     VERIFIED_ROLE_ID,
     LINKED_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_verified,
     is_linked,
     is_hoster,
@@ -61,7 +61,7 @@ def progress_bar(current: int, needed: int, length: int = 12) -> str:
 # ── Logging Helper ───────────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the log channel"""
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("moderation", 0))
     if channel:
         try:
             await channel.send(embed=embed)

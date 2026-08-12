@@ -20,7 +20,7 @@ from bot import (
     BLACKLIST_ROLE_ID,
     LINKED_ROLE_ID,
     PING_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_hoster,
     is_elite_hoster,
     is_staff,
@@ -51,7 +51,6 @@ async def award_xp(user_id: int, amount: int, member: discord.Member = None) -> 
 # ── Channels ──────────────────────────────────────────────────────────────────
 HOST_CHANNEL_ID = 1535562445286801438
 RAID_GATE_ID = 1535561934534082610
-RAID_LOG_CHANNEL_ID = 1535570717993865297
 
 PING_ROLE_ID = 1535696574150090772
 
@@ -85,7 +84,7 @@ def get_total_xp_for_raid_sync(final_wave: int) -> int:
 
 
 async def send_log(bot: commands.Bot, embed: discord.Embed):
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("raids", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -94,7 +93,7 @@ async def send_log(bot: commands.Bot, embed: discord.Embed):
 
 
 async def send_raid_log(bot: commands.Bot, embed: discord.Embed, view=None):
-    channel = bot.get_channel(RAID_LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("raids", 0))
     if channel:
         try:
             if view:

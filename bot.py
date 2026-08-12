@@ -16,7 +16,7 @@ if not TOKEN:
 GUILD_ID = 1535552806663094332
 
 # ── Channel IDs ──────────────────────────────────────────────────────────────
-LOG_CHANNEL_ID = 1536697361336631366
+LOG_CHANNELS: dict[str, int] = {}   # populated by cogs/log_setup.py on_ready
 LEVEL_UP_CHANNEL_ID = 1535735916893831260
 PING_ROLE_ID = 1535696574150090772
 
@@ -153,8 +153,8 @@ def get_hoster_bonus(member: discord.Member) -> float:
 
 # ── Global Logging Helper ────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
-    """Send a log message to the log channel"""
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    """Send a log message to the general log channel."""
+    channel = bot.get_channel(LOG_CHANNELS.get("general", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -409,6 +409,7 @@ intents.invites = True
 
 # ── Cog Load Order ──────────────────────────────────────────────────────────
 COGS = [
+    "cogs.log_setup",
     "cogs.ps_codes",
     "cogs.verify",
     "cogs.admin",

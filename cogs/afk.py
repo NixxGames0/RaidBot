@@ -8,7 +8,6 @@ import logging
 from bot import (
     d1_query,
     GUILD_ID,
-    LOG_CHANNEL_ID,
     send_log
 )
 

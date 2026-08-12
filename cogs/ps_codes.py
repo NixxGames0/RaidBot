@@ -11,7 +11,7 @@ from bot import (
     HEAD_STAFF_ROLE_ID,
     MOD_ROLE_ID,
     TRIAL_MOD_ROLE_ID,
-    LOG_CHANNEL_ID,
+    LOG_CHANNELS,
     is_staff,
     is_mod_or_higher,
     is_head_staff_or_founder
@@ -23,7 +23,7 @@ STAFF_ROLES = {FOUNDER_ROLE_ID, HEAD_STAFF_ROLE_ID, MOD_ROLE_ID, TRIAL_MOD_ROLE_
 
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the log channel"""
-    channel = bot.get_channel(LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("general", 0))
     if channel:
         try:
             await channel.send(embed=embed)

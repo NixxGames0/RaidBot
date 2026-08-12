@@ -8,12 +8,13 @@ from datetime import datetime, timezone, timedelta
 
 # Import shared functions from bot.py
 from bot import (
-    d1_query, 
+    d1_query,
     GUILD_ID,
     FOUNDER_ROLE_ID,
     HEAD_STAFF_ROLE_ID,
     MOD_ROLE_ID,
     TRIAL_MOD_ROLE_ID,
+    LOG_CHANNELS,
     is_staff,
     is_mod_or_higher,
     is_head_staff_or_founder
@@ -22,7 +23,6 @@ from bot import (
 # ── Channel IDs ──────────────────────────────────────────────────────────────
 TICKET_PANEL_CHANNEL_ID = 1535906243435040788
 TICKET_CATEGORY_ID = 1535905899854430222
-TICKET_LOG_CHANNEL_ID = 1535910317769629776
 
 # ── Staff Roles ──────────────────────────────────────────────────────────────
 STAFF_ROLES = {
@@ -43,7 +43,7 @@ PING_ROLES = [
 # ── Logging Helper ───────────────────────────────────────────────────────────
 async def send_log(bot: commands.Bot, embed: discord.Embed):
     """Send a log message to the ticket log channel"""
-    channel = bot.get_channel(TICKET_LOG_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("tickets", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -524,7 +524,7 @@ class ApplicationControlView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-        log_ch = interaction.guild.get_channel(TICKET_LOG_CHANNEL_ID)
+        log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("tickets", 0))
         if log_ch:
             embed = discord.Embed(
                 title=f"✅ {label} Application Accepted",
@@ -601,7 +601,7 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
             except discord.HTTPException:
                 pass
 
-        log_ch = interaction.guild.get_channel(TICKET_LOG_CHANNEL_ID)
+        log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("tickets", 0))
         if log_ch:
             embed = discord.Embed(
                 title=f"❌ {label} Application Denied",
