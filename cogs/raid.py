@@ -1654,27 +1654,28 @@ class Raid(commands.Cog):
             )
         await interaction.response.defer(ephemeral=True)
         try:
+            result = await d1_query(
+                """SELECT raid_id, host_discord_ids, wave_reached, flagged,
+                          time_started, created_at
+                   FROM raids
+                   WHERE is_completed = 1
+                   ORDER BY created_at DESC
+                   LIMIT 100"""
+            )
+            all_rows = result["results"]
             if user:
-                result = await d1_query(
-                    """SELECT raid_id, host_discord_ids, wave_reached, flagged,
-                              time_started, created_at
-                       FROM raids
-                       WHERE is_completed = 1
-                         AND host_discord_ids LIKE ?
-                       ORDER BY created_at DESC
-                       LIMIT 10""",
-                    [f"%{user.id}%"]
-                )
+                rows = []
+                for row in all_rows:
+                    try:
+                        host_ids = [int(x) for x in json.loads(row["host_discord_ids"] or "[]")]
+                    except Exception:
+                        host_ids = []
+                    if user.id in host_ids:
+                        rows.append(row)
+                        if len(rows) >= 10:
+                            break
             else:
-                result = await d1_query(
-                    """SELECT raid_id, host_discord_ids, wave_reached, flagged,
-                              time_started, created_at
-                       FROM raids
-                       WHERE is_completed = 1
-                       ORDER BY created_at DESC
-                       LIMIT 10"""
-                )
-            rows = result["results"]
+                rows = all_rows[:10]
             if not rows:
                 msg = (f"📭 No raid history found for {user.mention}." if user
                        else "📭 No raid history found.")
