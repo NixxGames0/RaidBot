@@ -44,7 +44,8 @@ async def ensure_log_channels(bot: commands.Bot) -> None:
 
         # Load saved ID from D1
         rows = await d1_query("SELECT value FROM bot_meta WHERE key = ?", [db_key])
-        saved_id = int(rows[0]["value"]) if rows else None
+        results = rows.get("results", []) if rows else []
+        saved_id = int(results[0]["value"]) if results else None
 
         channel = bot.get_channel(saved_id) if saved_id else None
 
