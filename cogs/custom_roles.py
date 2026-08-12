@@ -1022,11 +1022,12 @@ class CustomRoles(commands.Cog):
             color=discord.Color.blue(),
             timestamp=datetime.now(timezone.utc),
         )
-        embed.add_field(
-            name="Details",
-            value="\n".join(results[:25]) + (f"\n... and {len(results)-25} more" if len(results) > 25 else ""),
-            inline=False,
-        )
+        lines = results[:25]
+        suffix = f"\n... and {len(results)-25} more" if len(results) > 25 else ""
+        body   = "\n".join(lines) + suffix
+        if len(body) > 1020:
+            body = body[:1020] + "…"
+        embed.add_field(name="Details", value=body or "No results.", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
