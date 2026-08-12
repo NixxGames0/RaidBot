@@ -1264,6 +1264,22 @@ class PvPCog(commands.Cog):
                     except Exception:
                         pass
 
+        # Release PS codes stuck on matches that ended 3+ hours ago or never got cleaned up
+        cutoff = (now - timedelta(hours=3)).isoformat()
+        try:
+            await d1_query(
+                """UPDATE pvp_ps_codes
+                   SET match_id = NULL
+                   WHERE match_id IS NOT NULL
+                   AND match_id IN (
+                       SELECT match_id FROM pvp_matches
+                       WHERE started_at < ? AND ended_at IS NULL
+                   )""",
+                [cutoff]
+            )
+        except Exception:
+            pass
+
     # ── Startup helpers ────────────────────────────────────────────────────
 
     async def _assign_unranked_on_startup(self):
@@ -2041,37 +2057,56 @@ class PvPCog(commands.Cog):
         except Exception:
             pass
 
-    @app_commands.command(name="pvpaddcode", description="Add a PS code to the match pool (Staff only)")
-    @app_commands.describe(code="The Roblox private server code to add")
-    async def pvp_add_code(self, interaction: discord.Interaction, code: str):
+    @app_commands.command(name="pvpaddcode", description="Add one or more PS codes to the match pool (Staff only)")
+    @app_commands.describe(codes="Comma-separated PS codes to add")
+    async def pvp_add_code(self, interaction: discord.Interaction, codes: str):
         if not is_staff(interaction.user):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        try:
-            await d1_query(
-                "INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)",
-                [code.strip()],
-            )
-            await interaction.followup.send(
-                f"✅ PS code `{code.strip()}` added to the pool.", ephemeral=True
-            )
-        except Exception:
-            await interaction.followup.send(
-                "❌ That code already exists in the pool.", ephemeral=True
-            )
 
-    @app_commands.command(name="pvpremovecode", description="Remove a PS code from the pool (Staff only)")
-    @app_commands.describe(code="The Roblox private server code to remove")
-    async def pvp_remove_code(self, interaction: discord.Interaction, code: str):
+        items = [c.strip() for c in codes.split(",") if c.strip()]
+        added, dupes = [], []
+        for code in items:
+            try:
+                await d1_query(
+                    "INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)", [code]
+                )
+                added.append(code)
+            except Exception:
+                dupes.append(code)
+
+        lines = []
+        if added:
+            lines.append("✅ Added: " + ", ".join(f"`{c}`" for c in added))
+        if dupes:
+            lines.append("⚠️ Already existed: " + ", ".join(f"`{c}`" for c in dupes))
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+    @app_commands.command(name="pvpremovecode", description="Remove one or more PS codes from the pool (Staff only)")
+    @app_commands.describe(codes="Comma-separated PS codes to remove")
+    async def pvp_remove_code(self, interaction: discord.Interaction, codes: str):
         if not is_staff(interaction.user):
             return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        await d1_query(
-            "DELETE FROM pvp_ps_codes WHERE code = ?", [code.strip()]
-        )
-        await interaction.followup.send(
-            f"✅ PS code `{code.strip()}` removed from the pool.", ephemeral=True
-        )
+
+        items = [c.strip() for c in codes.split(",") if c.strip()]
+        removed, missing = [], []
+        for code in items:
+            res = await d1_query(
+                "SELECT code FROM pvp_ps_codes WHERE code = ?", [code]
+            )
+            if not res["results"]:
+                missing.append(code)
+                continue
+            await d1_query("DELETE FROM pvp_ps_codes WHERE code = ?", [code])
+            removed.append(code)
+
+        lines = []
+        if removed:
+            lines.append("✅ Removed: " + ", ".join(f"`{c}`" for c in removed))
+        if missing:
+            lines.append("⚠️ Not found: " + ", ".join(f"`{c}`" for c in missing))
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="pvplistcodes", description="List all PS codes in the pool (Staff only)")
     async def pvp_list_codes(self, interaction: discord.Interaction):
