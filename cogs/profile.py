@@ -414,46 +414,16 @@ async def _build_card(
     name_w, name_h = _tsize(d, name_str, fn_name)
 
     if top_role and top_role.name != "@everyone":
-        role_icon: Image.Image | None = None
-        if top_role.icon:
-            role_icon = await _fetch_image(session, str(top_role.icon.url), timeout=4)
-        if role_icon is None:
-            role_icon = _load_role_icon(top_role.name)
-
         role_color = (
             (top_role.color.r, top_role.color.g, top_role.color.b)
             if top_role.color.value else MUTED
         )
         fn_role = _font(SZ_ROLE, bold=True)
-        ICON_SZ = SZ_ROLE
-        icon_x  = CX + name_w + 14
-        icon_y  = 12 + (SZ_NAME - SZ_ROLE) // 2
-
-        if role_icon:
-            ri = role_icon.resize((ICON_SZ, ICON_SZ), Image.LANCZOS)
-            card.paste(ri, (icon_x, icon_y), ri)
-        else:
-            d.ellipse(
-                [icon_x, icon_y, icon_x + ICON_SZ, icon_y + ICON_SZ],
-                fill=(*role_color, 255),
-            )
-
-        role_x = icon_x + ICON_SZ + 10
+        role_x = CX + name_w + 14
         role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
-        # Strip emoji from role name before drawing — fonts can't render them
-        role_display = _clean_text(top_role.name)[:16]
-        if role_icon:
-            grad_src = role_icon
-        else:
-            grad_pair = ROLE_GRADIENTS.get(top_role.id)
-            grad_src = _gradient_rect(grad_pair[0], grad_pair[1], 200, 4) if grad_pair else None
-
+        role_display = _clean_text(top_role.name)[:18]
         if role_display:
-            if grad_src is not None:
-                _gradient_text(card, (role_x, role_y), role_display, fn_role,
-                               grad_src, fallback_color=role_color)
-            else:
-                d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
+            d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"

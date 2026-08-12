@@ -1620,6 +1620,20 @@ class Raid(commands.Cog):
         bot.add_view(HosterInviteView(0, 0, 0))  # dummy for persistence
         print("✅ Raid cog initialized")
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Restore active raid into memory if the bot restarted mid-raid."""
+        if raid_exists(GUILD_ID):
+            return
+        try:
+            raid = await get_active_raid_from_db(GUILD_ID)
+            if raid:
+                raids[GUILD_ID] = raid
+                schedule_raid_timeout(GUILD_ID, self.bot)
+                print(f"[Raid] Restored active raid {raid['raid_id']} from DB after restart")
+        except Exception as e:
+            print(f"[Raid] Failed to restore active raid on ready: {e}")
+
     @app_commands.command(
         name="raidhistory",
         description="List the last 10 raids (Staff only)"
