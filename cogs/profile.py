@@ -56,10 +56,9 @@ def _clean_text(name: str) -> str:
         cp = ord(c)
         return (
             0x0020 <= cp <= 0x007E   # printable ASCII
-            or 0x00A0 <= cp <= 0x024F  # Latin Extended
+            or 0x00C0 <= cp <= 0x024F  # Latin Extended (accented letters)
             or 0x0370 <= cp <= 0x03FF  # Greek
             or 0x0400 <= cp <= 0x04FF  # Cyrillic
-            or 0x2000 <= cp <= 0x206F  # General Punctuation
         )
     return ''.join(c for c in name if _keep(c)).strip()
 
@@ -449,11 +448,12 @@ async def _build_card(
             grad_pair = ROLE_GRADIENTS.get(top_role.id)
             grad_src = _gradient_rect(grad_pair[0], grad_pair[1], 200, 4) if grad_pair else None
 
-        if grad_src is not None:
-            _gradient_text(card, (role_x, role_y), role_display, fn_role,
-                           grad_src, fallback_color=role_color)
-        else:
-            d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
+        if role_display:
+            if grad_src is not None:
+                _gradient_text(card, (role_x, role_y), role_display, fn_role,
+                               grad_src, fallback_color=role_color)
+            else:
+                d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"

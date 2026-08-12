@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -419,6 +420,405 @@ class TicketModal(discord.ui.Modal, title="Create Ticket"):
         await send_log(interaction.client, log_embed)
 
 
+# ── Staff Application Constants ───────────────────────────────────────────────
+_APP_LABELS   = {"trial_hoster": "Trial Hoster", "trial_mod": "Trial Mod", "mod": "Moderator"}
+_APP_PREFIX   = {"trial_hoster": "hoster-app",   "trial_mod": "trialmod-app", "mod": "mod-app"}
+_APP_VIEWERS  = {
+    "trial_hoster": [HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID],
+    "trial_mod":    [HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID],
+    "mod":          [FOUNDER_ROLE_ID],
+}
+_APP_PING     = {"trial_hoster": HEAD_STAFF_ROLE_ID, "trial_mod": HEAD_STAFF_ROLE_ID, "mod": FOUNDER_ROLE_ID}
+_APP_ROLE     = {"trial_mod": TRIAL_MOD_ROLE_ID, "mod": MOD_ROLE_ID}
+_COOLDOWN_DAYS = 14
+
+
+class ApplicationControlView(discord.ui.View):
+    """Persistent Accept / Deny view living inside an application ticket."""
+
+    def __init__(self, app_id: int, app_type: str, user_id: int):
+        super().__init__(timeout=None)
+        self.app_id = app_id
+        self.app_type = app_type
+        self.user_id = user_id
+
+        accept = discord.ui.Button(
+            label="✅ Accept",
+            style=discord.ButtonStyle.success,
+            custom_id=f"app_accept_{app_id}"
+        )
+        deny = discord.ui.Button(
+            label="❌ Deny",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"app_deny_{app_id}"
+        )
+        accept.callback = self._accept
+        deny.callback = self._deny
+        self.add_item(accept)
+        self.add_item(deny)
+
+    def _can_act(self, member: discord.Member) -> bool:
+        if self.app_type == "mod":
+            return any(r.id == FOUNDER_ROLE_ID for r in member.roles)
+        return any(r.id in (HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID) for r in member.roles)
+
+    async def _accept(self, interaction: discord.Interaction):
+        if not self._can_act(interaction.user):
+            try:
+                await interaction.response.send_message(
+                    "❌ You don't have permission to accept this application.", ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            return
+
+        row = await d1_query(
+            "SELECT user_id, app_type, status FROM staff_applications WHERE id = ?",
+            [self.app_id]
+        )
+        if not row["results"] or row["results"][0]["status"] != "pending":
+            return await interaction.followup.send(
+                "❌ This application has already been processed.", ephemeral=True
+            )
+
+        uid = int(row["results"][0]["user_id"])
+        app_type = row["results"][0]["app_type"]
+        label = _APP_LABELS.get(app_type, app_type)
+
+        member = interaction.guild.get_member(uid)
+        if not member:
+            return await interaction.followup.send("❌ Applicant not found in server.", ephemeral=True)
+
+        if app_type == "trial_hoster":
+            th_cog = interaction.client.cogs.get("TrialHoster")
+            if th_cog:
+                await th_cog.setup_trial(interaction.guild, member, given_by=interaction.user)
+        else:
+            role = interaction.guild.get_role(_APP_ROLE.get(app_type))
+            if role:
+                try:
+                    await member.add_roles(role, reason=f"Application accepted by {interaction.user}")
+                except discord.HTTPException:
+                    pass
+
+        now = int(time.time())
+        await d1_query(
+            "UPDATE staff_applications SET status = 'accepted', resolved_at = ? WHERE id = ?",
+            [now, self.app_id]
+        )
+
+        extra = (
+            " You have **7 days** to earn **100 points** to become a full **Hoster**!"
+            if app_type == "trial_hoster" else ""
+        )
+        try:
+            await member.send(
+                f"✅ Your **{label}** application in **{interaction.guild.name}** has been **accepted**!\n"
+                f"You have been given the **{label}** role.{extra}"
+            )
+        except discord.HTTPException:
+            pass
+
+        log_ch = interaction.guild.get_channel(TICKET_LOG_CHANNEL_ID)
+        if log_ch:
+            embed = discord.Embed(
+                title=f"✅ {label} Application Accepted",
+                color=discord.Color.green(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="Applicant", value=f"{member.mention} ({member})", inline=True)
+            embed.add_field(name="Accepted By", value=interaction.user.mention, inline=True)
+            try:
+                await log_ch.send(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(f"✅ Accepted {member.mention}'s **{label}** application.")
+        await asyncio.sleep(3)
+        try:
+            await interaction.channel.delete(reason=f"Application accepted by {interaction.user}")
+        except discord.HTTPException:
+            pass
+
+    async def _deny(self, interaction: discord.Interaction):
+        if not self._can_act(interaction.user):
+            try:
+                await interaction.response.send_message(
+                    "❌ You don't have permission to deny this application.", ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
+            return
+        try:
+            await interaction.response.send_modal(
+                DenyReasonModal(self.app_id, self.app_type, self.user_id)
+            )
+        except discord.HTTPException:
+            pass
+
+
+class DenyReasonModal(discord.ui.Modal, title="Deny Application"):
+    reason = discord.ui.TextInput(
+        label="Reason for denial (optional)",
+        placeholder="Enter reason...",
+        required=False,
+        max_length=500,
+        style=discord.TextStyle.paragraph
+    )
+
+    def __init__(self, app_id: int, app_type: str, user_id: int):
+        super().__init__()
+        self.app_id = app_id
+        self.app_type = app_type
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            return
+
+        label = _APP_LABELS.get(self.app_type, self.app_type)
+        now = int(time.time())
+        await d1_query(
+            "UPDATE staff_applications SET status = 'denied', resolved_at = ? WHERE id = ?",
+            [now, self.app_id]
+        )
+
+        member = interaction.guild.get_member(self.user_id)
+        if member:
+            reason_text = f"\n**Reason:** {self.reason.value}" if self.reason.value else ""
+            try:
+                await member.send(
+                    f"❌ Your **{label}** application in **{interaction.guild.name}** has been **denied**.{reason_text}\n"
+                    f"You may reapply after **{_COOLDOWN_DAYS} days**."
+                )
+            except discord.HTTPException:
+                pass
+
+        log_ch = interaction.guild.get_channel(TICKET_LOG_CHANNEL_ID)
+        if log_ch:
+            embed = discord.Embed(
+                title=f"❌ {label} Application Denied",
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.add_field(name="Applicant", value=f"<@{self.user_id}>", inline=True)
+            embed.add_field(name="Denied By", value=interaction.user.mention, inline=True)
+            if self.reason.value:
+                embed.add_field(name="Reason", value=self.reason.value, inline=False)
+            try:
+                await log_ch.send(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        await interaction.followup.send(f"❌ Application denied.")
+        await asyncio.sleep(3)
+        try:
+            await interaction.channel.delete(reason=f"Application denied by {interaction.user}")
+        except discord.HTTPException:
+            pass
+
+
+class ApplicationTypeSelect(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.select(
+        placeholder="Choose a position to apply for...",
+        options=[
+            discord.SelectOption(
+                label="Trial Hoster",
+                value="trial_hoster",
+                description="Apply to host raids and earn the Hoster role",
+                emoji="🎯"
+            ),
+            discord.SelectOption(
+                label="Trial Mod",
+                value="trial_mod",
+                description="Apply to join the moderation team as Trial Mod",
+                emoji="🛡️"
+            ),
+            discord.SelectOption(
+                label="Moderator",
+                value="mod",
+                description="Apply to become a full Moderator",
+                emoji="⚔️"
+            ),
+        ]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        try:
+            await interaction.response.send_modal(StaffApplicationModal(select.values[0]))
+        except discord.HTTPException:
+            pass
+
+
+class StaffApplicationModal(discord.ui.Modal):
+    why = discord.ui.TextInput(
+        label="Why do you want this role?",
+        placeholder="Tell us why you'd be a great fit...",
+        required=True,
+        max_length=1000,
+        style=discord.TextStyle.paragraph
+    )
+    activity = discord.ui.TextInput(
+        label="How active are you? (hours/week)",
+        placeholder="e.g. 10-15 hours",
+        required=True,
+        max_length=50,
+        style=discord.TextStyle.short
+    )
+    experience = discord.ui.TextInput(
+        label="Previous experience?",
+        placeholder="Any previous similar roles or experience...",
+        required=False,
+        max_length=500,
+        style=discord.TextStyle.paragraph
+    )
+    timezone_field = discord.ui.TextInput(
+        label="Timezone",
+        placeholder="e.g. EST, PST, GMT+1",
+        required=True,
+        max_length=50,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, app_type: str):
+        label = _APP_LABELS.get(app_type, app_type)
+        super().__init__(title=f"Apply for {label}")
+        self.app_type = app_type
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            return
+
+        # One active application per user
+        existing = await d1_query(
+            "SELECT id FROM staff_applications WHERE user_id = ? AND status = 'pending'",
+            [str(interaction.user.id)]
+        )
+        if existing["results"]:
+            return await interaction.followup.send(
+                "❌ You already have an open application. Wait for it to be resolved first.",
+                ephemeral=True
+            )
+
+        # 14-day cooldown after denial for this app type
+        cooldown_cutoff = int(time.time()) - (_COOLDOWN_DAYS * 86400)
+        recent = await d1_query(
+            "SELECT resolved_at FROM staff_applications "
+            "WHERE user_id = ? AND app_type = ? AND status = 'denied' AND resolved_at > ?",
+            [str(interaction.user.id), self.app_type, cooldown_cutoff]
+        )
+        if recent["results"]:
+            eligible_ts = recent["results"][0]["resolved_at"] + (_COOLDOWN_DAYS * 86400)
+            return await interaction.followup.send(
+                f"❌ You were recently denied for this position. You may reapply <t:{eligible_ts}:R>.",
+                ephemeral=True
+            )
+
+        category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
+        if not category:
+            return await interaction.followup.send("❌ Ticket category not found.", ephemeral=True)
+
+        label = _APP_LABELS[self.app_type]
+        prefix = _APP_PREFIX[self.app_type]
+        viewer_ids = _APP_VIEWERS[self.app_type]
+        ping_id = _APP_PING[self.app_type]
+
+        user_name = interaction.user.display_name[:16].replace(" ", "-").lower()
+        channel_name = f"{prefix}-{user_name}"
+
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            ),
+            interaction.guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True,
+                read_message_history=True, manage_channels=True
+            ),
+        }
+        for rid in viewer_ids:
+            role = interaction.guild.get_role(rid)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True
+                )
+
+        try:
+            channel = await interaction.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"{label} application by {interaction.user}"
+            )
+        except discord.HTTPException as e:
+            return await interaction.followup.send(
+                f"❌ Failed to create channel: {e}", ephemeral=True
+            )
+
+        now_ts = int(time.time())
+        await d1_query(
+            "INSERT INTO staff_applications (user_id, app_type, status, channel_id, created_at) "
+            "VALUES (?, ?, 'pending', ?, ?)",
+            [str(interaction.user.id), self.app_type, str(channel.id), now_ts]
+        )
+        id_row = await d1_query(
+            "SELECT id FROM staff_applications WHERE channel_id = ?", [str(channel.id)]
+        )
+        app_id = id_row["results"][0]["id"]
+
+        embed = discord.Embed(
+            title=f"📋 {label} Application",
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_author(
+            name=str(interaction.user),
+            icon_url=interaction.user.display_avatar.url
+        )
+        embed.add_field(name="👤 Applicant", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📋 Position",  value=label,                    inline=True)
+        embed.add_field(name="🕐 Applied",   value=f"<t:{now_ts}:F>",        inline=True)
+        embed.add_field(name="❓ Why do you want this role?", value=self.why.value, inline=False)
+        embed.add_field(name="⏰ Activity",   value=self.activity.value,      inline=True)
+        embed.add_field(name="🌍 Timezone",   value=self.timezone_field.value, inline=True)
+        if self.experience.value:
+            embed.add_field(name="📜 Experience", value=self.experience.value, inline=False)
+
+        view = ApplicationControlView(app_id=app_id, app_type=self.app_type, user_id=interaction.user.id)
+        interaction.client.add_view(view)
+
+        ping_role = interaction.guild.get_role(ping_id)
+        await channel.send(
+            content=ping_role.mention if ping_role else "",
+            embed=embed,
+            view=view
+        )
+
+        try:
+            await interaction.user.send(
+                f"📋 Your **{label}** application in **{interaction.guild.name}** has been submitted!\n"
+                f"Staff will review it in <#{channel.id}>. You'll be DM'd when a decision is made."
+            )
+        except discord.HTTPException:
+            pass
+
+        await interaction.followup.send(
+            f"✅ Your **{label}** application has been submitted! Check <#{channel.id}>.",
+            ephemeral=True
+        )
+
+
 class TicketPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -450,6 +850,28 @@ class TicketPanelView(discord.ui.View):
     async def other_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         await handle_ticket_creation(interaction, "Other")
 
+    @discord.ui.button(
+        label="Apply",
+        style=discord.ButtonStyle.success,
+        emoji="📝",
+        custom_id="ticket_apply"
+    )
+    async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📋 Staff Application",
+            description=(
+                "Select the position you'd like to apply for below.\n\n"
+                "**Hoster apps** → reviewed by Head Staff & Founders\n"
+                "**Trial Mod apps** → reviewed by Head Staff & Founders\n"
+                "**Mod apps** → reviewed by Founders only"
+            ),
+            color=discord.Color.blue()
+        )
+        try:
+            await interaction.response.send_message(embed=embed, view=ApplicationTypeSelect(), ephemeral=True)
+        except discord.HTTPException:
+            pass
+
 
 async def handle_ticket_creation(interaction: discord.Interaction, ticket_type: str):
     """Handle ticket creation with modal — open modal immediately; duplicate check is inside on_submit."""
@@ -471,10 +893,33 @@ class TicketSystem(commands.Cog):
         try:
             await self.bot.wait_until_ready()
 
+            # Ensure staff_applications table exists
+            await d1_query(
+                "CREATE TABLE IF NOT EXISTS staff_applications "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, "
+                "app_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+                "channel_id TEXT, created_at INTEGER NOT NULL, resolved_at INTEGER)"
+            )
+
             # Register Ticket Panel View
             ticket_view = TicketPanelView()
             self.bot.add_view(ticket_view)
             print("✅ Registered persistent Ticket Panel view")
+
+            # Restore pending application views
+            apps = await d1_query(
+                "SELECT id, app_type, user_id FROM staff_applications WHERE status = 'pending'"
+            )
+            app_count = 0
+            for app in apps.get("results", []):
+                view = ApplicationControlView(
+                    app_id=app["id"],
+                    app_type=app["app_type"],
+                    user_id=int(app["user_id"])
+                )
+                self.bot.add_view(view)
+                app_count += 1
+            print(f"✅ Restored {app_count} pending application view(s)")
 
             # Restore all open tickets
             result = await d1_query(

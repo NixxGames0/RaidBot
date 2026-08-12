@@ -33,6 +33,7 @@ FOUNDER_ROLE_ID = 1535553078852325506
 BLACKLIST_ROLE_ID = 1535669616721002626
 BOT_VERIFIED_ROLE = 1535554357762850817  # Same as VERIFIED_ROLE_ID
 BOOSTER_ROLE_ID = 1535570767855624262  # Server Booster role
+TRIAL_HOSTER_ROLE_ID = 1537019401847439410
 
 # ── Staff Role Sets ──────────────────────────────────────────────────────────
 STAFF_ROLES = {
@@ -424,6 +425,7 @@ COGS = [
     "cogs.profile",
     "cogs.pvp",
     "cogs.moderation",
+    "cogs.trial_hoster",
 ]
 
 

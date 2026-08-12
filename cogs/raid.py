@@ -364,6 +364,10 @@ async def end_raid_logic(guild: discord.Guild, raid: dict, final_wave: int, flag
                 xp_lines.append(f"<@{hid}> → +**{xp_each}** XP{bonus_tag}")
                 if xp_result.get("leveled_up", False):
                     level_ups.append(f"<@{hid}> → Level **{xp_result['new_level']}**! 🎉")
+        th_cog = bot.cogs.get("TrialHoster")
+        if th_cog:
+            for hid in raid["hosters"]:
+                await th_cog.check_user_promotion(guild, hid)
     raid_id = await save_raid_to_history(
         guild.id, raid, final_wave, flagged,
         points_each if not flagged else None,
@@ -571,6 +575,10 @@ class FlaggedApprovalView(discord.ui.View):
                 if xp_result.get("leveled_up", False):
                     level_ups.append(f"<@{hid}> → Level **{xp_result['new_level']}**! 🎉")
         guild = interaction.guild
+        th_cog = interaction.client.cogs.get("TrialHoster")
+        if th_cog:
+            for hid in self.hosters:
+                await th_cog.check_user_promotion(guild, hid)
         await update_top_hoster_roles(guild, interaction.client)
         embed = discord.Embed(
             title="✅ Flagged Raid Approved",
@@ -963,6 +971,10 @@ async def end_raid(interaction: discord.Interaction, final_wave: int):
                 xp_lines.append(f"<@{hid}> → +**{xp_each}** XP{bonus_tag}")
                 if xp_result.get("leveled_up", False):
                     level_ups.append(f"<@{hid}> → Level **{xp_result['new_level']}**! 🎉")
+        th_cog = interaction.client.cogs.get("TrialHoster")
+        if th_cog:
+            for hid in raid["hosters"]:
+                await th_cog.check_user_promotion(interaction.guild, hid)
     raid_id = await save_raid_to_history(
         guild_id, raid, final_wave, flagged,
         points_each if not flagged else None,
@@ -1783,6 +1795,10 @@ class Raid(commands.Cog):
                 xp_lines.append(f"<@{hid}> → +**{xp_each}** XP{bonus_tag}")
                 if xp_result.get("leveled_up", False):
                     level_ups.append(f"<@{hid}> → Level **{xp_result['new_level']}**! 🎉")
+        th_cog = interaction.client.cogs.get("TrialHoster")
+        if th_cog:
+            for hid in raid["hosters"]:
+                await th_cog.check_user_promotion(interaction.guild, hid)
         await save_raid_to_history(guild_id, raid, final_wave, False, points_each, xp_each)
         for uid in raid["hosters"] + raid["player_ids"]:
             try:
