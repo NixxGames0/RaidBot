@@ -38,58 +38,51 @@ class PSCodes(commands.Cog):
 
     @app_commands.command(
         name="addps",
-        description="Add a PS code to the database (Head Staff+)"
+        description="Add one or more PS codes to the database (Head Staff+)"
     )
-    @app_commands.describe(code="The PS code to add")
+    @app_commands.describe(codes="Comma-separated PS codes to add")
     @app_commands.checks.cooldown(1, 5)
-    async def addps(self, interaction: discord.Interaction, code: str):
-        # Head Staff+ only
+    async def addps(self, interaction: discord.Interaction, codes: str):
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.",
-                ephemeral=True
+                "❌ You do not have permission to use this command.", ephemeral=True
             )
 
-        # Clean the code
-        code = code.strip().upper()
-        if not code:
+        items = [c.strip().upper() for c in codes.split(",") if c.strip()]
+        if not items:
             return await interaction.response.send_message(
-                "❌ Please provide a valid code.",
-                ephemeral=True
+                "❌ Please provide at least one valid code.", ephemeral=True
             )
 
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            # Check if code already exists
-            check = await d1_query(
-                "SELECT code FROM codes WHERE code = ?",
-                [code]
-            )
-
-            if check["results"]:
-                return await interaction.followup.send(
-                    f"⚠️ Code `{code}` already exists in the database.",
-                    ephemeral=True
+        added, dupes = [], []
+        now = datetime.now(timezone.utc).isoformat()
+        for code in items:
+            try:
+                check = await d1_query("SELECT code FROM codes WHERE code = ?", [code])
+                if check["results"]:
+                    dupes.append(code)
+                    continue
+                await d1_query(
+                    "INSERT INTO codes (code, is_using, held_by, claimed_at, created_at) VALUES (?, 0, NULL, NULL, ?)",
+                    [code, now]
                 )
+                added.append(code)
+            except Exception as e:
+                print(f"Error in addps for {code}: {e}")
 
-            # Insert the new code
-            now = datetime.now(timezone.utc).isoformat()
-            await d1_query(
-                """INSERT INTO codes (code, is_using, held_by, claimed_at, created_at) 
-                   VALUES (?, 0, NULL, NULL, ?)""",
-                [code, now]
-            )
+        lines = []
+        if added:
+            lines.append("✅ Added: " + ", ".join(f"`{c}`" for c in added))
+        if dupes:
+            lines.append("⚠️ Already existed: " + ", ".join(f"`{c}`" for c in dupes))
+        await interaction.followup.send("\n".join(lines) or "❌ No codes processed.", ephemeral=True)
 
-            await interaction.followup.send(
-                f"✅ Code `{code}` added successfully!",
-                ephemeral=True
-            )
-
-            # Log the addition
+        if added:
             embed = discord.Embed(
-                title="📥 PS Code Added",
-                description=f"Code: `{code}`",
+                title="📥 PS Codes Added",
+                description=", ".join(f"`{c}`" for c in added),
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
@@ -97,87 +90,63 @@ class PSCodes(commands.Cog):
             embed.set_footer(text=f"User ID: {interaction.user.id}")
             await send_log(self.bot, embed)
 
-        except Exception as e:
-            print(f"Error in addps: {e}")
-            await interaction.followup.send(
-                f"❌ Error adding code: {str(e)[:100]}",
-                ephemeral=True
-            )
-
     @app_commands.command(
         name="delps",
-        description="Delete a PS code from the database (Head Staff+)"
+        description="Delete one or more PS codes from the database (Head Staff+)"
     )
-    @app_commands.describe(code="The PS code to delete")
+    @app_commands.describe(codes="Comma-separated PS codes to delete")
     @app_commands.checks.cooldown(1, 5)
-    async def delps(self, interaction: discord.Interaction, code: str):
-        # Head Staff+ only
+    async def delps(self, interaction: discord.Interaction, codes: str):
         if not is_head_staff_or_founder(interaction.user):
             return await interaction.response.send_message(
-                "❌ You do not have permission to use this command.",
-                ephemeral=True
+                "❌ You do not have permission to use this command.", ephemeral=True
             )
 
-        code = code.strip().upper()
-        if not code:
+        items = [c.strip().upper() for c in codes.split(",") if c.strip()]
+        if not items:
             return await interaction.response.send_message(
-                "❌ Please provide a valid code.",
-                ephemeral=True
+                "❌ Please provide at least one valid code.", ephemeral=True
             )
 
         await interaction.response.defer(ephemeral=True)
 
-        try:
-            # Check if code exists
-            check = await d1_query(
-                "SELECT code, is_using, held_by FROM codes WHERE code = ?",
-                [code]
-            )
-
-            if not check["results"]:
-                return await interaction.followup.send(
-                    f"⚠️ Code `{code}` not found in the database.",
-                    ephemeral=True
+        removed, in_use, missing = [], [], []
+        for code in items:
+            try:
+                check = await d1_query(
+                    "SELECT code, is_using, held_by FROM codes WHERE code = ?", [code]
                 )
+                if not check["results"]:
+                    missing.append(code)
+                    continue
+                row = check["results"][0]
+                if row["is_using"]:
+                    in_use.append(f"`{code}` (held by <@{row['held_by']}>)")
+                    continue
+                await d1_query("DELETE FROM codes WHERE code = ?", [code])
+                removed.append(code)
+            except Exception as e:
+                print(f"Error in delps for {code}: {e}")
 
-            # Check if code is in use
-            row = check["results"][0]
-            if row["is_using"]:
-                held_by = row["held_by"]
-                return await interaction.followup.send(
-                    f"⚠️ Code `{code}` is currently in use by <@{held_by}>. "
-                    f"Please have them release it first, or use `/forceps` to force remove it.",
-                    ephemeral=True
-                )
+        lines = []
+        if removed:
+            lines.append("🗑️ Removed: " + ", ".join(f"`{c}`" for c in removed))
+        if in_use:
+            lines.append("⚠️ In use (use `/forceps` to force remove): " + ", ".join(in_use))
+        if missing:
+            lines.append("❌ Not found: " + ", ".join(f"`{c}`" for c in missing))
+        await interaction.followup.send("\n".join(lines) or "❌ No codes processed.", ephemeral=True)
 
-            # Delete the code
-            await d1_query(
-                "DELETE FROM codes WHERE code = ?",
-                [code]
-            )
-
-            await interaction.followup.send(
-                f"🗑️ Code `{code}` deleted successfully.",
-                ephemeral=True
-            )
-
-            # Log the deletion
+        if removed:
             embed = discord.Embed(
-                title="📤 PS Code Removed",
-                description=f"Code: `{code}`",
+                title="📤 PS Codes Removed",
+                description=", ".join(f"`{c}`" for c in removed),
                 color=discord.Color.red(),
                 timestamp=datetime.now(timezone.utc)
             )
             embed.add_field(name="Removed By", value=interaction.user.mention, inline=True)
             embed.set_footer(text=f"User ID: {interaction.user.id}")
             await send_log(self.bot, embed)
-
-        except Exception as e:
-            print(f"Error in delps: {e}")
-            await interaction.followup.send(
-                f"❌ Error deleting code: {str(e)[:100]}",
-                ephemeral=True
-            )
 
     @app_commands.command(
         name="forceps",
