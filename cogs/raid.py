@@ -1644,8 +1644,9 @@ class Raid(commands.Cog):
         name="raidhistory",
         description="List the last 10 raids (Staff only)"
     )
+    @app_commands.describe(user="Filter to raids hosted by this user (optional)")
     @app_commands.checks.cooldown(1, 10)
-    async def raidhistory(self, interaction: discord.Interaction):
+    async def raidhistory(self, interaction: discord.Interaction, user: discord.Member = None):
         if not is_staff(interaction.user):
             return await interaction.response.send_message(
                 "❌ You do not have permission.",
@@ -1653,46 +1654,60 @@ class Raid(commands.Cog):
             )
         await interaction.response.defer(ephemeral=True)
         try:
-            result = await d1_query(
-                """SELECT raid_id, host_discord_ids, wave_reached, flagged,
-                          time_started, created_at
-                   FROM raids
-                   WHERE is_completed = 1
-                   ORDER BY created_at DESC
-                   LIMIT 10"""
-            )
+            if user:
+                result = await d1_query(
+                    """SELECT raid_id, host_discord_ids, wave_reached, flagged,
+                              time_started, created_at
+                       FROM raids
+                       WHERE is_completed = 1
+                         AND host_discord_ids LIKE ?
+                       ORDER BY created_at DESC
+                       LIMIT 10""",
+                    [f"%{user.id}%"]
+                )
+            else:
+                result = await d1_query(
+                    """SELECT raid_id, host_discord_ids, wave_reached, flagged,
+                              time_started, created_at
+                       FROM raids
+                       WHERE is_completed = 1
+                       ORDER BY created_at DESC
+                       LIMIT 10"""
+                )
             rows = result["results"]
             if not rows:
-                return await interaction.followup.send(
-                    "📭 No raid history found.",
-                    ephemeral=True
-                )
+                msg = (f"📭 No raid history found for {user.mention}." if user
+                       else "📭 No raid history found.")
+                return await interaction.followup.send(msg, ephemeral=True)
             table_rows = []
             for row in rows:
                 try:
                     host_ids = json.loads(row["host_discord_ids"] or "[]")
                     host = interaction.guild.get_member(int(host_ids[0])) if host_ids else None
                     host_name = host.display_name if host else f"<@{host_ids[0]}>" if host_ids else "Unknown"
-                except:
+                except Exception:
                     host_name = "Unknown"
                 status = "⚠️" if row["flagged"] else "✅"
                 time_started = datetime.fromisoformat(row["time_started"])
                 time_created = datetime.fromisoformat(row["created_at"])
                 duration = (time_created - time_started).total_seconds()
                 duration_str = f"{int(duration // 60)}m {int(duration % 60)}s"
-                xp_total = get_total_xp_for_raid_sync(row["wave_reached"])
-                xp_each = xp_total
+                xp_each = get_total_xp_for_raid_sync(row["wave_reached"])
                 points_each = row["wave_reached"]
                 table_rows.append(
                     f"`{row['raid_id'][:6]}` {status} **{host_name}** · {row['wave_reached']}/20 · "
                     f"{duration_str} · {xp_each} XP · {points_each} pts · "
                     f"<t:{int(time_created.timestamp())}:R>"
                 )
+            title = (f"📜 Raid History — {user.display_name} (Last 10)" if user
+                     else "📜 Raid History (Last 10)")
             embed = discord.Embed(
-                title="📜 Raid History (Last 10)",
+                title=title,
                 color=discord.Color.blurple(),
                 timestamp=datetime.now(timezone.utc)
             )
+            if user:
+                embed.set_thumbnail(url=user.display_avatar.url)
             embed.add_field(
                 name="━━━━━━━━━━━━━━━━━━━━━━",
                 value="\n".join(table_rows),
