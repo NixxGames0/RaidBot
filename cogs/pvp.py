@@ -541,11 +541,36 @@ class ScoreResultView(discord.ui.View):
 class RematchView(discord.ui.View):
     def __init__(self, p1_id: int, p2_id: int, guild_id: int):
         super().__init__(timeout=60)
-        self._p1_id    = p1_id
-        self._p2_id    = p2_id
-        self._guild_id = guild_id
-        self._p1_ready = False
-        self._p2_ready = False
+        self._p1_id           = p1_id
+        self._p2_id           = p2_id
+        self._guild_id        = guild_id
+        self._p1_ready        = False
+        self._p2_ready        = False
+        self._p1_ranked_ready = False
+        self._p2_ranked_ready = False
+
+    async def _start_rematch(self, interaction: discord.Interaction, match_type: str):
+        cog: PvPCog | None = interaction.client.cogs.get("PvPCog")
+        if cog and (cog._in_match(self._p1_id) or cog._in_match(self._p2_id)):
+            return await interaction.response.send_message(
+                "❌ A player is already in an active match.", ephemeral=True
+            )
+        self.stop()
+        await interaction.response.send_message(
+            f"⚔️ Creating {'ranked ' if match_type == 'ranked' else ''}rematch channel..."
+        )
+        match_id = str(uuid.uuid4())[:8]
+        now_iso  = datetime.now(timezone.utc).isoformat()
+        await d1_query(
+            """INSERT INTO pvp_matches
+               (match_id, player1_id, player2_id, match_type, started_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [match_id, str(self._p1_id), str(self._p2_id), match_type, now_iso, now_iso]
+        )
+        asyncio.ensure_future(_create_match_channel(
+            interaction.client, self._guild_id, match_id,
+            self._p1_id, self._p2_id, match_type
+        ))
 
     @discord.ui.button(label="Rematch (casual)", style=discord.ButtonStyle.blurple, emoji="🔄")
     async def rematch(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -558,23 +583,27 @@ class RematchView(discord.ui.View):
             self._p2_ready = True
 
         if self._p1_ready and self._p2_ready:
-            self.stop()
-            await interaction.response.send_message("⚔️ Creating rematch channel...")
-            match_id = str(uuid.uuid4())[:8]
-            now_iso  = datetime.now(timezone.utc).isoformat()
-            await d1_query(
-                """INSERT INTO pvp_matches
-                   (match_id, player1_id, player2_id, match_type, started_at, created_at)
-                   VALUES (?, ?, ?, 'casual', ?, ?)""",
-                [match_id, str(self._p1_id), str(self._p2_id), now_iso, now_iso]
-            )
-            asyncio.ensure_future(_create_match_channel(
-                interaction.client, self._guild_id, match_id,
-                self._p1_id, self._p2_id, "casual"
-            ))
+            await self._start_rematch(interaction, "casual")
         else:
             await interaction.response.send_message(
                 "✅ Waiting for your opponent to accept the rematch...", ephemeral=True
+            )
+
+    @discord.ui.button(label="Rematch (ranked)", style=discord.ButtonStyle.danger, emoji="🏆")
+    async def rematch_ranked(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self._p1_id, self._p2_id):
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+
+        if interaction.user.id == self._p1_id:
+            self._p1_ranked_ready = True
+        else:
+            self._p2_ranked_ready = True
+
+        if self._p1_ranked_ready and self._p2_ranked_ready:
+            await self._start_rematch(interaction, "ranked")
+        else:
+            await interaction.response.send_message(
+                "✅ Waiting for your opponent to accept the ranked rematch...", ephemeral=True
             )
 
 
@@ -1044,6 +1073,17 @@ async def _create_match_channel(
 
     ps_code = await _claim_ps_code(match_id)
 
+    p1_pr = await d1_query(
+        "SELECT pvp_placement_left, pvp_placement_done FROM users WHERE discord_id = ?",
+        [str(p1_id)]
+    )
+    p2_pr = await d1_query(
+        "SELECT pvp_placement_left, pvp_placement_done FROM users WHERE discord_id = ?",
+        [str(p2_id)]
+    )
+    p1_pd = p1_pr["results"][0] if p1_pr["results"] else {}
+    p2_pd = p2_pr["results"][0] if p2_pr["results"] else {}
+
     pvp_active_matches[match_id] = {
         "player1":      p1_id,
         "player2":      p2_id,
@@ -1072,6 +1112,18 @@ async def _create_match_channel(
         embed.add_field(name="🎮 PS Code", value=f"`{ps_code}`", inline=False)
     else:
         embed.add_field(name="🎮 PS Code", value="No codes available — host manually.", inline=False)
+
+    if match_type == "ranked":
+        placement_lines = []
+        if not bool(p1_pd.get("pvp_placement_done")):
+            left = p1_pd.get("pvp_placement_left") or 0
+            placement_lines.append(f"{p1.mention}: **{left}** placement match(es) left")
+        if not bool(p2_pd.get("pvp_placement_done")):
+            left = p2_pd.get("pvp_placement_left") or 0
+            placement_lines.append(f"{p2.mention}: **{left}** placement match(es) left")
+        if placement_lines:
+            embed.add_field(name="📊 Placement Progress", value="\n".join(placement_lines), inline=False)
+
     embed.set_footer(text="Use the score dropdown once the match ends.")
 
     await channel.send(
@@ -1340,6 +1392,23 @@ class PvPCog(commands.Cog):
 
             if panel_updated:
                 await self._update_panel_count(guild_id)
+
+            # 5-minute ranked queue DM — fires once per player per queue session
+            for uid, entry in list(guild_queue.items()):
+                if entry.get("type") != "ranked":
+                    continue
+                wait_s = (now - entry["joined_at"]).total_seconds()
+                if wait_s >= 300 and not entry.get("five_min_dm_sent"):
+                    entry["five_min_dm_sent"] = True
+                    try:
+                        user = await self.bot.fetch_user(uid)
+                        await user.send(
+                            "⏳ You've been in the **ranked queue** for **5 minutes**.\n"
+                            "ELO restrictions are now lifted — you'll match with anyone.\n"
+                            "Use `/pvpleave` if you want to leave the queue."
+                        )
+                    except Exception:
+                        pass
 
         # Expire stale pending confirmations
         for mid in list(pvp_pending):
@@ -1788,6 +1857,189 @@ class PvPCog(commands.Cog):
         await interaction.response.send_message(
             f"✅ {user.mention}'s PvP suspension lifted.", ephemeral=True
         )
+
+    @app_commands.command(name="pvphistory", description="View recent match history for yourself or another player")
+    @app_commands.describe(user="Player to check (defaults to you)")
+    async def pvp_history(self, interaction: discord.Interaction, user: discord.Member | None = None):
+        target = user or interaction.user
+        await interaction.response.defer()
+
+        matches_row = await d1_query(
+            """SELECT match_id, winner_id, player1_id, player2_id, score,
+                      p1_elo_before, p2_elo_before, p1_elo_after, p2_elo_after,
+                      match_type, ended_at
+               FROM pvp_matches
+               WHERE (player1_id = ? OR player2_id = ?) AND ended_at IS NOT NULL
+               ORDER BY ended_at DESC LIMIT 10""",
+            [str(target.id), str(target.id)]
+        )
+
+        embed = discord.Embed(
+            title=f"📜 PvP History — {target.display_name}",
+            color=discord.Color.blurple(),
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+
+        results = matches_row.get("results", [])
+        if not results:
+            embed.description = "No match history found."
+            return await interaction.followup.send(embed=embed)
+
+        lines = []
+        for m in results:
+            tid   = str(target.id)
+            won   = tid == str(m.get("winner_id"))
+            is_p1 = tid == str(m["player1_id"])
+            opp_id = m["player2_id"] if is_p1 else m["player1_id"]
+
+            elo_before = m.get("p1_elo_before") if is_p1 else m.get("p2_elo_before")
+            elo_after  = m.get("p1_elo_after")  if is_p1 else m.get("p2_elo_after")
+
+            score      = m.get("score") or "—"
+            mtype      = m.get("match_type") or "casual"
+            icon       = "🟢" if won else "🔴"
+            type_icon  = "🏆" if mtype == "ranked" else "🎮"
+            date_str   = (m.get("ended_at") or "")[:10]
+
+            delta_str = ""
+            if elo_before is not None and elo_after is not None:
+                delta = elo_after - elo_before
+                sign  = "+" if delta >= 0 else ""
+                delta_str = f" `{sign}{delta} ELO`"
+
+            lines.append(f"{icon} {type_icon} vs <@{opp_id}> **{score}**{delta_str} · {date_str}")
+
+        embed.description = "\n".join(lines)
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="pvpsetresult", description="Staff: manually set the result of an active match")
+    @app_commands.describe(
+        match_id="Match ID (shown in the channel topic or /pvpstats)",
+        winner="The winning player",
+        score="Score — 2-0 or 2-1",
+    )
+    @app_commands.choices(score=[
+        app_commands.Choice(name="2-0", value="2-0"),
+        app_commands.Choice(name="2-1", value="2-1"),
+    ])
+    async def pvp_set_result(
+        self,
+        interaction: discord.Interaction,
+        match_id: str,
+        winner: discord.Member,
+        score: str,
+    ):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+
+        match = pvp_active_matches.get(match_id)
+        if not match:
+            return await interaction.response.send_message(
+                f"❌ No active match found with ID `{match_id}`.", ephemeral=True
+            )
+        if winner.id not in (match["player1"], match["player2"]):
+            return await interaction.response.send_message(
+                "❌ The winner must be a participant in that match.", ephemeral=True
+            )
+
+        loser_id = match["player2"] if winner.id == match["player1"] else match["player1"]
+        p1_id, p2_id = match["player1"], match["player2"]
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = interaction.client.get_channel(match.get("channel_id", 0))
+        if channel:
+            try:
+                await channel.send(
+                    f"📋 **Staff result override** by {interaction.user.mention}: "
+                    f"{winner.mention} wins **{score}**."
+                )
+            except Exception:
+                pass
+
+        embed = await _apply_match_result(
+            interaction.client, match_id, winner.id, loser_id, score, interaction.guild
+        )
+        if channel and embed:
+            try:
+                view = RematchView(p1_id, p2_id, interaction.guild_id)
+                await channel.send(embed=embed, view=view)
+                await asyncio.sleep(15)
+                await channel.delete(reason="PvP match ended — staff override")
+            except Exception:
+                pass
+
+        await interaction.followup.send(
+            f"✅ Match `{match_id}` resolved: {winner.mention} wins **{score}**.", ephemeral=True
+        )
+        try:
+            log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("pvp", 0))
+            if log_ch:
+                await log_ch.send(
+                    f"[PvP Override] {interaction.user.mention} set match `{match_id}` → "
+                    f"{winner.mention} wins {score}"
+                )
+        except Exception:
+            pass
+
+    @app_commands.command(name="pvpforfeit", description="Staff: force-forfeit a player in their active match")
+    @app_commands.describe(user="Player to forfeit")
+    async def pvp_forfeit_staff(self, interaction: discord.Interaction, user: discord.Member):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
+
+        match_id   = None
+        match_data = None
+        for mid, m in pvp_active_matches.items():
+            if user.id in (m["player1"], m["player2"]):
+                match_id   = mid
+                match_data = m
+                break
+
+        if not match_id:
+            return await interaction.response.send_message(
+                f"❌ {user.mention} is not in an active match.", ephemeral=True
+            )
+
+        winner_id = match_data["player2"] if user.id == match_data["player1"] else match_data["player1"]
+        p1_id, p2_id = match_data["player1"], match_data["player2"]
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = interaction.client.get_channel(match_data.get("channel_id", 0))
+        if channel:
+            try:
+                await channel.send(
+                    f"🏳️ **Staff forfeit** by {interaction.user.mention}: "
+                    f"{user.mention} has been forfeited. <@{winner_id}> wins **(2-0)**."
+                )
+            except Exception:
+                pass
+
+        embed = await _apply_match_result(
+            interaction.client, match_id, winner_id, user.id, "2-0", interaction.guild
+        )
+        if channel and embed:
+            try:
+                view = RematchView(p1_id, p2_id, interaction.guild_id)
+                await channel.send(embed=embed, view=view)
+                await asyncio.sleep(15)
+                await channel.delete(reason="PvP match ended — staff forfeit")
+            except Exception:
+                pass
+
+        await interaction.followup.send(
+            f"✅ {user.mention} forfeited match `{match_id}`. <@{winner_id}> wins.", ephemeral=True
+        )
+        try:
+            log_ch = interaction.guild.get_channel(LOG_CHANNELS.get("pvp", 0))
+            if log_ch:
+                await log_ch.send(
+                    f"[PvP Forfeit] {interaction.user.mention} force-forfeited {user.mention} "
+                    f"from match `{match_id}` — <@{winner_id}> wins"
+                )
+        except Exception:
+            pass
 
     @app_commands.command(name="pvpaddcode", description="Add a PS code to the match pool (Staff only)")
     @app_commands.describe(code="The Roblox private server code to add")

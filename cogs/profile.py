@@ -30,15 +30,16 @@ RANK_PRIORITY = [
     1535554357762850817,   # Verified
 ]
 
-# Gradient color pairs (start, end) for each rank role — used when no Discord role icon is set
+# Gradient color pairs (start, end) for each rank role — used for the accent strip
 ROLE_GRADIENTS: dict[int, tuple[tuple, tuple]] = {
-    1535553078852325506: ((0, 191, 165),   (0, 121, 107)),    # Founder:     teal
-    1535558010431340604: ((124, 58, 237),  (76, 29, 149)),    # Head Staff:  deep purple
-    1536740055643594782: ((249, 115, 22),  (194, 65, 12)),    # Staff:       orange
-    1535558108590383184: ((239, 68, 68),   (153, 27, 27)),    # Mod:         crimson
-    1535558050532827186: ((251, 79, 123),  (190, 24, 93)),    # Trial Mod:   rose
-    1535556016865808444: ((132, 204, 22),  (63, 98, 18)),     # Hoster:      lime
-    1535554357762850817: ((16, 185, 129),  (6, 95, 70)),      # Verified:    emerald
+    1535553078852325506: ((220, 220, 235), (120, 120, 140)),  # Founder:     silver-lilac
+    1535558010431340604: ((147,  51, 234), ( 88,  28, 135)),  # Head Staff:  deep purple
+    1536740055643594782: ((249, 115,  22), (180,  58,   8)),  # Staff:       orange
+    1535558108590383184: ((239,  68,  68), (153,  27,  27)),  # Mod:         crimson
+    1535558050532827186: ((236,  72, 153), (157,  23,  77)),  # Trial Mod:   rose-pink
+    1535556016865808444: ((132, 204,  22), ( 63,  98,  18)),  # Hoster:      lime
+    1537019401847439410: ((255, 122, 224), (196,  23, 138)),  # Trial Hoster: magenta-pink
+    1535554357762850817: (( 52, 211, 153), (  6,  95,  70)),  # Verified:    emerald
 }
 
 PVP_TIERS = [
@@ -401,7 +402,15 @@ async def _build_card(
         card.paste(wm, (W - WM // 2, (H - WM) // 2), wm)
 
     # ── Left accent strip ──────────────────────────────────────────────────
-    d.rectangle([0, 0, 7, H], fill=(*accent, 255))
+    role_grad = ROLE_GRADIENTS.get(top_role.id) if top_role else None
+    if role_grad:
+        sc, ec = role_grad
+        for _y in range(H):
+            t = _y / H
+            col = tuple(int(sc[i] + (ec[i] - sc[i]) * t) for i in range(3))
+            d.line([(0, _y), (7, _y)], fill=(*col, 255))
+    else:
+        d.rectangle([0, 0, 7, H], fill=(*accent, 255))
 
     # ── Avatar ─────────────────────────────────────────────────────────────
     av_img = await _fetch_image(session, str(target.display_avatar.url))
@@ -624,8 +633,12 @@ class ProfileCog(commands.Cog):
         role_icon_url = str(top_role.icon.url) if (top_role and top_role.icon) else None
 
         accent = (88, 101, 242)
-        if top_role and top_role.color.value:
-            accent = (top_role.color.r, top_role.color.g, top_role.color.b)
+        if top_role:
+            _rg = ROLE_GRADIENTS.get(top_role.id)
+            if _rg:
+                accent = _rg[0]
+            elif top_role.color.value:
+                accent = (top_role.color.r, top_role.color.g, top_role.color.b)
 
         session = self._session or aiohttp.ClientSession()
 
