@@ -828,12 +828,111 @@ class ReportPlayerSelect(discord.ui.Select):
             ReportModal(self.match_id, interaction.user.id, reported_id))
 
 
+class ForfeitConfirmView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, match_id: str, forfeiter_id: int,
+                 winner_id: int, channel: discord.TextChannel, guild: discord.Guild,
+                 p1_id: int, p2_id: int):
+        super().__init__(timeout=30)
+        self._bot         = bot
+        self.match_id     = match_id
+        self.forfeiter_id = forfeiter_id
+        self.winner_id    = winner_id
+        self._channel     = channel
+        self._guild       = guild
+        self._p1_id       = p1_id
+        self._p2_id       = p2_id
+        self._done        = False
+
+    async def _execute(self, interaction: discord.Interaction):
+        if self._done:
+            return
+        self._done = True
+        self.stop()
+        await interaction.response.edit_message(
+            content="✅ Forfeit confirmed. Processing...", view=None
+        )
+        await self._channel.send(
+            f"🏳️ <@{self.forfeiter_id}> has **forfeited** the match. "
+            f"<@{self.winner_id}> wins **(2-0)**!"
+        )
+        embed = await _apply_match_result(
+            self._bot, self.match_id,
+            self.winner_id, self.forfeiter_id, "2-0", self._guild
+        )
+        try:
+            view = RematchView(self._p1_id, self._p2_id, self._guild.id)
+            await self._channel.send(embed=embed, view=view)
+            await asyncio.sleep(15)
+            await self._channel.delete(reason="PvP match ended — forfeit")
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Yes, forfeit", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.forfeiter_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        await self._execute(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.forfeiter_id:
+            return await interaction.response.send_message("❌ Not for you.", ephemeral=True)
+        self._done = True
+        self.stop()
+        await interaction.response.edit_message(content="Forfeit cancelled.", view=None)
+
+    async def on_timeout(self):
+        self._done = True
+
+
+class ForfeitButton(discord.ui.Button):
+    def __init__(self, match_id: str, p1_id: int, p2_id: int):
+        super().__init__(
+            label="Forfeit",
+            style=discord.ButtonStyle.danger,
+            emoji="🏳️",
+            row=2,
+        )
+        self.match_id = match_id
+        self._p1_id   = p1_id
+        self._p2_id   = p2_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id not in (self._p1_id, self._p2_id):
+            return await interaction.response.send_message(
+                "❌ Only match participants can forfeit.", ephemeral=True
+            )
+        match = pvp_active_matches.get(self.match_id)
+        if not match:
+            return await interaction.response.send_message(
+                "❌ Match not found or already ended.", ephemeral=True
+            )
+        winner_id = self._p2_id if interaction.user.id == self._p1_id else self._p1_id
+        view = ForfeitConfirmView(
+            bot=interaction.client,
+            match_id=self.match_id,
+            forfeiter_id=interaction.user.id,
+            winner_id=winner_id,
+            channel=interaction.channel,
+            guild=interaction.guild,
+            p1_id=self._p1_id,
+            p2_id=self._p2_id,
+        )
+        await interaction.response.send_message(
+            "⚠️ Are you sure you want to **forfeit** this match? "
+            "Your opponent will be awarded the win **(2-0)**.",
+            view=view,
+            ephemeral=True,
+        )
+
+
 class MatchPanelView(discord.ui.View):
     def __init__(self, match_id: str, p1: discord.Member, p2: discord.Member):
         super().__init__(timeout=None)
         self.match_id = match_id
         self.add_item(Bo3ScoreSelect(p1, p2, match_id))
         self.add_item(ReportPlayerSelect(p1, p2, match_id))
+        self.add_item(ForfeitButton(match_id, p1.id, p2.id))
 
 
 # ── Staff: /pvpreports ─────────────────────────────────────────────────────────
