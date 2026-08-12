@@ -26,6 +26,7 @@ RANK_PRIORITY = [
     1535558108590383184,   # Mod
     1535558050532827186,   # Trial Mod
     1535556016865808444,   # Hoster
+    1537019401847439410,   # Trial Hoster
     1535554357762850817,   # Verified
 ]
 
@@ -51,12 +52,15 @@ PVP_TIERS = [
 ]
 
 def _clean_text(name: str) -> str:
-    """Remove emoji/symbols that Liberation/DejaVu fonts cannot render."""
+    """Normalize Unicode variants (bold/italic math chars) then strip anything a standard font can't render."""
+    import unicodedata
+    # NFKD decomposes e.g. 𝗙𝗼𝘂𝗻𝗱𝗲𝗿 → Founder
+    name = unicodedata.normalize("NFKD", name)
     def _keep(c: str) -> bool:
         cp = ord(c)
         return (
             0x0020 <= cp <= 0x007E   # printable ASCII
-            or 0x00C0 <= cp <= 0x024F  # Latin Extended (accented letters)
+            or 0x00C0 <= cp <= 0x024F  # Latin Extended
             or 0x0370 <= cp <= 0x03FF  # Greek
             or 0x0400 <= cp <= 0x04FF  # Cyrillic
         )
@@ -274,6 +278,18 @@ def _circle(img: Image.Image, size: int) -> Image.Image:
     return out
 
 
+def _rounded_square(img: Image.Image, size: int, radius: int = 5) -> Image.Image:
+    img = img.resize((size, size), Image.LANCZOS)
+    mask = Image.new("L", (size, size), 0)
+    try:
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=radius, fill=255)
+    except AttributeError:
+        ImageDraw.Draw(mask).rectangle([0, 0, size - 1, size - 1], fill=255)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(img, mask=mask)
+    return out
+
+
 def _apply_alpha(img: Image.Image, opacity: float) -> Image.Image:
     r, g, b, a = img.split()
     a = a.point(lambda x: int(x * opacity))
@@ -430,9 +446,9 @@ async def _build_card(
         ICON_SZ  = 30
 
         if role_icon_img:
-            icon_circle = _circle(role_icon_img, ICON_SZ)
+            icon_sq = _rounded_square(role_icon_img, ICON_SZ)
             icon_y = role_y + (SZ_ROLE - ICON_SZ) // 2
-            card.paste(icon_circle, (cur_x, icon_y), icon_circle)
+            card.paste(icon_sq, (cur_x, icon_y), icon_sq)
             cur_x += ICON_SZ + 8
 
         role_display = _clean_text(top_role.name)[:18]

@@ -284,32 +284,38 @@ async def save_raid_to_history(guild_id: int, raid_data: dict, final_wave: int,
         return None
 
 
-async def add_hoster_points(user_id: int, amount: int) -> dict:
+async def add_hoster_points(user_id: int, amount: int, waves: int = 0) -> dict:
     try:
         now = datetime.now(timezone.utc).isoformat()
         result = await d1_query(
-            "SELECT hoster_points, weekly_points, total_points_earned FROM users WHERE discord_id = ?",
+            "SELECT hoster_points, weekly_points, total_points_earned, raids_completed, global_waves FROM users WHERE discord_id = ?",
             [str(user_id)]
         )
         if not result["results"]:
             return None
-        current_lifetime = result["results"][0]["hoster_points"] or 0
-        current_weekly = result["results"][0]["weekly_points"] or 0
-        current_total_earned = result["results"][0]["total_points_earned"] or 0
+        row = result["results"][0]
+        current_lifetime    = row["hoster_points"]       or 0
+        current_weekly      = row["weekly_points"]       or 0
+        current_total       = row["total_points_earned"] or 0
+        current_raids       = row["raids_completed"]     or 0
+        current_waves       = row["global_waves"]        or 0
         new_lifetime = current_lifetime + amount
-        new_weekly = current_weekly + amount
-        new_total_earned = current_total_earned + amount
+        new_weekly   = current_weekly   + amount
+        new_total    = current_total    + amount
+        new_raids    = current_raids    + (1 if waves > 0 else 0)
+        new_waves    = current_waves    + waves
         await d1_query(
-            "UPDATE users SET hoster_points = ?, weekly_points = ?, total_points_earned = ?, updated_at = ? WHERE discord_id = ?",
-            [new_lifetime, new_weekly, new_total_earned, now, str(user_id)]
+            "UPDATE users SET hoster_points = ?, weekly_points = ?, total_points_earned = ?, "
+            "raids_completed = ?, global_waves = ?, updated_at = ? WHERE discord_id = ?",
+            [new_lifetime, new_weekly, new_total, new_raids, new_waves, now, str(user_id)]
         )
         return {
             "old_lifetime": current_lifetime,
             "new_lifetime": new_lifetime,
-            "old_weekly": current_weekly,
-            "new_weekly": new_weekly,
-            "old_total_earned": current_total_earned,
-            "new_total_earned": new_total_earned,
+            "old_weekly":   current_weekly,
+            "new_weekly":   new_weekly,
+            "old_total_earned": current_total,
+            "new_total_earned": new_total,
             "points_added": amount,
         }
     except Exception as e:
@@ -354,7 +360,7 @@ async def end_raid_logic(guild: discord.Guild, raid: dict, final_wave: int, flag
     level_ups = []
     if not flagged:
         for hid in raid["hosters"]:
-            point_result = await add_hoster_points(hid, points_each)
+            point_result = await add_hoster_points(hid, points_each, waves=final_wave)
             if point_result:
                 hoster_lines.append(f"<@{hid}> → +**{points_each}** pts")
             member = guild.get_member(hid)
@@ -564,7 +570,7 @@ class FlaggedApprovalView(discord.ui.View):
         xp_lines = []
         level_ups = []
         for hid in self.hosters:
-            point_result = await add_hoster_points(hid, self.points_each)
+            point_result = await add_hoster_points(hid, self.points_each, waves=self.points_each)
             if point_result:
                 hoster_lines.append(f"<@{hid}> → +**{self.points_each}** pts")
             member = interaction.guild.get_member(hid)
@@ -965,7 +971,7 @@ async def end_raid(interaction: discord.Interaction, final_wave: int):
     level_ups = []
     if not flagged:
         for hid in raid["hosters"]:
-            point_result = await add_hoster_points(hid, points_each)
+            point_result = await add_hoster_points(hid, points_each, waves=final_wave)
             if point_result:
                 hoster_lines.append(f"<@{hid}> → +**{points_each}** pts")
             member = interaction.guild.get_member(hid)
@@ -1803,7 +1809,7 @@ class Raid(commands.Cog):
         xp_lines = []
         level_ups = []
         for hid in raid["hosters"]:
-            point_result = await add_hoster_points(hid, points_each)
+            point_result = await add_hoster_points(hid, points_each, waves=final_wave)
             if point_result:
                 hoster_lines.append(f"<@{hid}> → +**{points_each}** pts")
             member = interaction.guild.get_member(hid)
