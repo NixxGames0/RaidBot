@@ -90,8 +90,6 @@ def d1_query_sync(sql: str, params: list = None):
         res = requests.post(CF_URL, headers=HEADERS, json={"sql": sql, "params": params}, timeout=30)
         data = res.json()
         if not data.get("success"):
-            print(f"[D1 DEBUG] HTTP {res.status_code} | URL: {CF_URL}")
-            print(f"[D1 DEBUG] Full response: {data}")
             err = data.get("errors", [{}])[0].get("message", "D1 query failed")
             raise Exception(err)
         return data["result"][0]
