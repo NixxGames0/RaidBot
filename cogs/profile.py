@@ -364,6 +364,7 @@ async def _build_card(
     pvp_placement_done: int, pvp_placement_left: int,
     tenure: str, accent: tuple,
     top_role: discord.Role | None = None,
+    role_icon_url: str | None = None,
 ) -> io.BytesIO:
 
     # ── Background gradient ────────────────────────────────────────────────
@@ -408,22 +409,35 @@ async def _build_card(
     CX    = AV_X + AV_SIZE + 24
     COL_W = 175
 
-    # ── Line 1: Username + [role icon] + Role name (same line) ────────────
+    # ── Fetch role icon async ──────────────────────────────────────────────
+    role_icon_img = None
+    if role_icon_url:
+        role_icon_img = await _fetch_image(session, role_icon_url)
+
+    # ── Line 1: Username  [icon] Role name ────────────────────────────────
     name_str = _clean_text(target.display_name)[:20]
     d.text((CX, 12), name_str, font=fn_name, fill=WHITE)
-    name_w, name_h = _tsize(d, name_str, fn_name)
+    name_w, _ = _tsize(d, name_str, fn_name)
 
     if top_role and top_role.name != "@everyone":
         role_color = (
             (top_role.color.r, top_role.color.g, top_role.color.b)
             if top_role.color.value else MUTED
         )
-        fn_role = _font(SZ_ROLE, bold=True)
-        role_x = CX + name_w + 14
-        role_y = 12 + (SZ_NAME - SZ_ROLE) // 2
+        fn_role  = _font(SZ_ROLE, bold=True)
+        role_y   = 12 + (SZ_NAME - SZ_ROLE) // 2
+        cur_x    = CX + name_w + 16
+        ICON_SZ  = 30
+
+        if role_icon_img:
+            icon_circle = _circle(role_icon_img, ICON_SZ)
+            icon_y = role_y + (SZ_ROLE - ICON_SZ) // 2
+            card.paste(icon_circle, (cur_x, icon_y), icon_circle)
+            cur_x += ICON_SZ + 8
+
         role_display = _clean_text(top_role.name)[:18]
         if role_display:
-            d.text((role_x, role_y), role_display, font=fn_role, fill=role_color)
+            d.text((cur_x, role_y), role_display, font=fn_role, fill=role_color)
 
     # ── Sub-line ───────────────────────────────────────────────────────────
     rank_str = f"#{global_rank}" if str(global_rank) != "N/A" else "-"
@@ -579,22 +593,23 @@ class ProfileCog(commands.Cog):
         top_role: discord.Role | None = next(
             (role_map[rid] for rid in RANK_PRIORITY if rid in role_map), None
         )
-        # Fallback: highest-position non-@everyone role
+        # Fallback: match by name in case server role IDs differ
         if top_role is None:
+            _RANK_NAMES = {
+                "Founder", "Head Staff", "Staff", "Moderator", "Mod",
+                "Trial Mod", "Elite Hoster", "Hoster", "Trial Hoster", "Verified",
+            }
             top_role = next(
                 (r for r in sorted(target.roles, key=lambda r: r.position, reverse=True)
-                 if r.name != "@everyone"),
+                 if r.name in _RANK_NAMES),
                 None
             )
+
+        role_icon_url = str(top_role.icon.url) if (top_role and top_role.icon) else None
 
         accent = (88, 101, 242)
         if top_role and top_role.color.value:
             accent = (top_role.color.r, top_role.color.g, top_role.color.b)
-        else:
-            for role in reversed(target.roles):
-                if role.color.value:
-                    accent = (role.color.r, role.color.g, role.color.b)
-                    break
 
         session = self._session or aiohttp.ClientSession()
 
@@ -607,6 +622,7 @@ class ProfileCog(commands.Cog):
                 pvp_placement_done, pvp_placement_left,
                 _tenure(created_at), accent,
                 top_role=top_role,
+                role_icon_url=role_icon_url,
             )
             await interaction.followup.send(
                 file=discord.File(buf, filename=f"profile_{target.id}.png")

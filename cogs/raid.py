@@ -1912,22 +1912,32 @@ class Raid(commands.Cog):
                 ephemeral=True
             )
         await interaction.response.defer(ephemeral=True)
+
+        # Map player Discord ID → Roblox username entered at join time
+        player_roblox: dict[int, str] = {}
+        for i, pid in enumerate(raid.get("player_ids", [])):
+            names = raid.get("players", [])
+            if i < len(names):
+                player_roblox[pid] = names[i]
+
         all_members = []
         for hid in raid.get("hosters", []):
             member = interaction.guild.get_member(hid)
             if member:
-                user_result = await d1_query(
-                    "SELECT roblox_users FROM users WHERE discord_id = ?",
-                    [str(hid)]
-                )
-                roblox_name = "Unknown"
-                if user_result["results"]:
-                    try:
-                        roblox_users = json.loads(user_result["results"][0]["roblox_users"] or "[]")
-                        if roblox_users:
-                            roblox_name = roblox_users[0]
-                    except:
-                        pass
+                # Hosters join separately — look up from their linked accounts
+                roblox_name = player_roblox.get(hid, "Unknown")
+                if roblox_name == "Unknown":
+                    user_result = await d1_query(
+                        "SELECT roblox_users FROM users WHERE discord_id = ?",
+                        [str(hid)]
+                    )
+                    if user_result["results"]:
+                        try:
+                            linked = json.loads(user_result["results"][0]["roblox_users"] or "[]")
+                            if linked:
+                                roblox_name = linked[0]
+                        except Exception:
+                            pass
                 all_members.append({
                     "discord": member,
                     "roblox": roblox_name,
@@ -1939,21 +1949,9 @@ class Raid(commands.Cog):
                 continue
             member = interaction.guild.get_member(pid)
             if member:
-                user_result = await d1_query(
-                    "SELECT roblox_users FROM users WHERE discord_id = ?",
-                    [str(pid)]
-                )
-                roblox_name = "Unknown"
-                if user_result["results"]:
-                    try:
-                        roblox_users = json.loads(user_result["results"][0]["roblox_users"] or "[]")
-                        if roblox_users:
-                            roblox_name = roblox_users[0]
-                    except:
-                        pass
                 all_members.append({
                     "discord": member,
-                    "roblox": roblox_name,
+                    "roblox": player_roblox.get(pid, "Unknown"),
                     "is_hoster": False,
                     "is_host": False
                 })
