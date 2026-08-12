@@ -28,17 +28,16 @@ git add .
 git diff --staged --quiet
 if %errorlevel% equ 0 (
     echo  [INFO] Nothing new to commit.
-    goto :done
+) else (
+    git commit -m "Update RaidBot"
+    if %errorlevel% neq 0 (
+        echo  [ERROR] Commit failed. Check git status.
+        pause
+        exit /b 1
+    )
+    echo  [OK] Committed successfully.
+    echo.
 )
-
-git commit -m "Update RaidBot"
-if %errorlevel% neq 0 (
-    echo  [ERROR] Commit failed. Check git status.
-    pause
-    exit /b 1
-)
-echo  [OK] Committed successfully.
-echo.
 
 echo  Pushing to GitHub...
 git push origin main
