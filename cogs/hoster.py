@@ -24,6 +24,7 @@ from bot import (
     STAFF_ROLES,
     is_hoster,
     is_elite_hoster,
+    is_hoster_or_higher,
     is_staff,
     is_mod_or_higher,
     is_head_staff_or_founder,
@@ -588,9 +589,9 @@ class Hoster(commands.Cog):
     async def points(self, interaction: discord.Interaction):
         """Check weekly hoster points - shows balance and total earned"""
         # Hoster+ only
-        if not is_hoster(interaction.user) and not is_staff(interaction.user):
+        if not is_hoster_or_higher(interaction.user):
             return await interaction.response.send_message(
-                "❌ You need the Hoster role to use this command.",
+                "❌ You need the Hoster or Trial Hoster role to use this command.",
                 ephemeral=True
             )
 

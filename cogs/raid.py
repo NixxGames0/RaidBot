@@ -23,6 +23,7 @@ from bot import (
     LOG_CHANNELS,
     is_hoster,
     is_elite_hoster,
+    is_hoster_or_higher,
     is_staff,
     is_mod_or_higher,
     is_head_staff_or_founder,
@@ -893,9 +894,9 @@ class InviteHosterModal(discord.ui.Modal, title="Invite Hoster"):
                 "❌ User not found in this server.",
                 ephemeral=True
             )
-        if not is_hoster(member):
+        if not is_hoster_or_higher(member):
             return await interaction.followup.send(
-                f"❌ {member.mention} does not have the Hoster role.",
+                f"❌ {member.mention} does not have the Hoster or Trial Hoster role.",
                 ephemeral=True
             )
         if not is_linked(member):
@@ -1584,9 +1585,9 @@ class StartRaidPanelView(discord.ui.View):
     )
     async def start_raid(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            if not is_hoster(interaction.user) and not is_staff(interaction.user):
+            if not is_hoster_or_higher(interaction.user):
                 return await interaction.response.send_message(
-                    "❌ You need the Hoster role to start a raid.",
+                    "❌ You need the Hoster or Trial Hoster role to start a raid.",
                     ephemeral=True
                 )
             if is_user_hosting(interaction.user.id):
