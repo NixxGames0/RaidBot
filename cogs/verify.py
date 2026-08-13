@@ -319,7 +319,7 @@ async def finalize_verification(bot: commands.Bot, interaction: discord.Interact
 
     # Check if user already exists
     existing = await d1_query(
-        "SELECT discord_id, roblox_users, invited_by FROM users WHERE discord_id = ?",
+        "SELECT discord_id, roblox_users, roblox_ids, invited_by FROM users WHERE discord_id = ?",
         [str(target.id)]
     )
 
@@ -334,9 +334,12 @@ async def finalize_verification(bot: commands.Bot, interaction: discord.Interact
                 ephemeral=True
             )
         current.append(roblox)
+        current_ids = json.loads(existing["results"][0].get("roblox_ids") or "[]")
+        if roblox_id not in current_ids:
+            current_ids.append(roblox_id)
         await d1_query(
-            "UPDATE users SET roblox_users = ?, updated_at = ? WHERE discord_id = ?",
-            [json.dumps(current), now, str(target.id)]
+            "UPDATE users SET roblox_users = ?, roblox_ids = ?, updated_at = ? WHERE discord_id = ?",
+            [json.dumps(current), json.dumps(current_ids), now, str(target.id)]
         )
 
         # Add linked role if not present
@@ -365,11 +368,11 @@ async def finalize_verification(bot: commands.Bot, interaction: discord.Interact
 
         # Create new user record
         await d1_query(
-            """INSERT INTO users 
-            (discord_id, roblox_users, ps_codes, in_raid, hoster_points, weekly_points,
+            """INSERT INTO users
+            (discord_id, roblox_users, roblox_ids, ps_codes, in_raid, hoster_points, weekly_points,
              global_waves, raids_completed, risk_value, level, exp, invited_by, created_at, updated_at)
-            VALUES (?, ?, '[]', 0, 0, 0, 0, 0, 0, 1, 0, ?, ?, ?)""",
-            [str(target.id), json.dumps([roblox]), str(inviter_id) if inviter_id else None, now, now]
+            VALUES (?, ?, ?, '[]', 0, 0, 0, 0, 0, 0, 1, 0, ?, ?, ?)""",
+            [str(target.id), json.dumps([roblox]), json.dumps([roblox_id]), str(inviter_id) if inviter_id else None, now, now]
         )
 
         # Add linked role

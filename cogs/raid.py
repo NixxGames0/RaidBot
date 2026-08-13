@@ -240,13 +240,31 @@ async def build_gate_embed(guild: discord.Guild, raid: dict) -> discord.Embed:
     return embed
 
 
+async def _get_hoster_roblox_ids(discord_ids: list) -> str:
+    """Returns JSON array of all Roblox IDs linked to the given Discord IDs."""
+    if not discord_ids:
+        return "[]"
+    placeholders = ",".join(["?"] * len(discord_ids))
+    result = await d1_query(
+        f"SELECT roblox_ids FROM users WHERE discord_id IN ({placeholders})",
+        [str(d) for d in discord_ids],
+    )
+    flat: list[int] = []
+    for row in result.get("results", []):
+        ids = json.loads(row.get("roblox_ids") or "[]")
+        flat.extend(ids)
+    return json.dumps(flat)
+
+
 async def save_raid_to_history(guild_id: int, raid_data: dict, final_wave: int,
                                flagged: bool, points_awarded: int, xp_awarded: int):
     try:
         raid_id = raid_data.get("raid_id", str(uuid.uuid4())[:8])
         now = datetime.now(timezone.utc).isoformat()
-        hoster_ids = json.dumps(raid_data.get("hosters", []))
+        hoster_discord_ids = raid_data.get("hosters", [])
+        hoster_ids = json.dumps(hoster_discord_ids)
         player_ids = json.dumps(raid_data.get("player_ids", []))
+        host_roblox_ids = await _get_hoster_roblox_ids(hoster_discord_ids)
         existing = await d1_query(
             "SELECT raid_id FROM raids WHERE raid_id = ?",
             [raid_id]
@@ -254,21 +272,22 @@ async def save_raid_to_history(guild_id: int, raid_data: dict, final_wave: int,
         if existing["results"]:
             await d1_query(
                 """UPDATE raids SET
-                    host_discord_ids = ?, joined_users = ?, is_completed = 1,
-                    wave_reached = ?, flagged = ?, created_at = ?
+                    host_discord_ids = ?, host_roblox_ids = ?, joined_users = ?,
+                    is_completed = 1, wave_reached = ?, flagged = ?, created_at = ?
                 WHERE raid_id = ?""",
-                [hoster_ids, player_ids, final_wave, 1 if flagged else 0, now, raid_id]
+                [hoster_ids, host_roblox_ids, player_ids, final_wave, 1 if flagged else 0, now, raid_id]
             )
         else:
             await d1_query(
                 """INSERT INTO raids
-                (raid_id, host_discord_ids, host_roblox_names, is_completed,
+                (raid_id, host_discord_ids, host_roblox_names, host_roblox_ids, is_completed,
                  time_started, code_used, flagged, joined_users, wave_reached, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     raid_id,
                     hoster_ids,
                     "[]",
+                    host_roblox_ids,
                     1,
                     raid_data["start_time"].isoformat(),
                     raid_data.get("code", ""),
@@ -1212,16 +1231,19 @@ class RaidSetupView(discord.ui.View):
         }
         raid = raids[guild_id]
         try:
-            hoster_ids = json.dumps(raid["hosters"])
+            hoster_discord_ids = raid["hosters"]
+            hoster_ids = json.dumps(hoster_discord_ids)
+            host_roblox_ids = await _get_hoster_roblox_ids(hoster_discord_ids)
             await d1_query(
                 """INSERT INTO raids
-                (raid_id, host_discord_ids, host_roblox_names, is_completed,
+                (raid_id, host_discord_ids, host_roblox_names, host_roblox_ids, is_completed,
                  time_started, code_used, flagged, joined_users, wave_reached, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     raid_id,
                     hoster_ids,
                     "[]",
+                    host_roblox_ids,
                     0,
                     now.isoformat(),
                     self.code,

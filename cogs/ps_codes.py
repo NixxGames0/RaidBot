@@ -54,25 +54,38 @@ def _pill(codes: list[str]) -> str:
 
 # ── DB accessors ──────────────────────────────────────────────────────────────
 
-async def _raid_add(code: str) -> bool:
-    """Returns True if inserted, False if duplicate."""
-    check = await d1_query("SELECT code FROM codes WHERE code = ?", [code])
-    if check["results"]:
-        return False
+async def _code_exists_anywhere(code: str) -> str | None:
+    """Returns 'raid', 'pvp', or None indicating where the code already exists."""
+    if (await d1_query("SELECT code FROM codes WHERE code = ?", [code]))["results"]:
+        return TYPE_RAID
+    if (await d1_query("SELECT code FROM pvp_ps_codes WHERE code = ?", [code]))["results"]:
+        return TYPE_PVP
+    return None
+
+
+async def _raid_add(code: str) -> tuple[bool, str | None]:
+    """Returns (inserted, conflict_pool). conflict_pool is set when code exists elsewhere."""
+    exists_in = await _code_exists_anywhere(code)
+    if exists_in == TYPE_RAID:
+        return False, None          # dupe in same pool
+    if exists_in == TYPE_PVP:
+        return False, TYPE_PVP     # conflict with other pool
     now = datetime.now(timezone.utc).isoformat()
     await d1_query(
         "INSERT INTO codes (code, is_using, held_by, claimed_at, created_at) VALUES (?, 0, NULL, NULL, ?)",
         [code, now],
     )
-    return True
+    return True, None
 
 
-async def _pvp_add(code: str) -> bool:
-    check = await d1_query("SELECT code FROM pvp_ps_codes WHERE code = ?", [code])
-    if check["results"]:
-        return False
+async def _pvp_add(code: str) -> tuple[bool, str | None]:
+    exists_in = await _code_exists_anywhere(code)
+    if exists_in == TYPE_PVP:
+        return False, None
+    if exists_in == TYPE_RAID:
+        return False, TYPE_RAID
     await d1_query("INSERT INTO pvp_ps_codes (code, match_id) VALUES (?, NULL)", [code])
-    return True
+    return True, None
 
 
 async def _raid_info(code: str) -> dict | None:
@@ -130,10 +143,15 @@ class PSCodes(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        added, dupes = [], []
+        added, dupes, conflicts = [], [], []
         for code in items:
-            ok = await (_pvp_add(code) if type == TYPE_PVP else _raid_add(code))
-            (added if ok else dupes).append(code)
+            ok, conflict_pool = await (_pvp_add(code) if type == TYPE_PVP else _raid_add(code))
+            if ok:
+                added.append(code)
+            elif conflict_pool:
+                conflicts.append((code, TYPE_LABELS[conflict_pool]))
+            else:
+                dupes.append(code)
 
         label = TYPE_LABELS[type]
         embed = discord.Embed(
@@ -144,7 +162,14 @@ class PSCodes(commands.Cog):
         if added:
             embed.add_field(name=f"✅ Added ({len(added)})", value=_pill(added), inline=False)
         if dupes:
-            embed.add_field(name=f"⚠️ Already in pool ({len(dupes)})", value=_pill(dupes), inline=False)
+            embed.add_field(name=f"⚠️ Already in {label} pool ({len(dupes)})", value=_pill(dupes), inline=False)
+        if conflicts:
+            lines = [f"`{c}` — already in **{p}** pool" for c, p in conflicts]
+            embed.add_field(
+                name=f"🚫 Exists in other pool ({len(conflicts)})",
+                value=_cap("\n".join(lines)),
+                inline=False,
+            )
         embed.set_footer(text=f"By {interaction.user.display_name} · {label} pool")
         await interaction.followup.send(embed=embed, ephemeral=True)
 

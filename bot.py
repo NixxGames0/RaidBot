@@ -2,7 +2,9 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
+import json
 import requests
+import aiohttp
 from dotenv import load_dotenv
 from functools import partial
 
@@ -68,9 +70,10 @@ HOSTER_PLUS_ROLES = {
 ELITE_HOSTER_XP_BONUS = 1.25  # 25% bonus XP
 
 # ── Cloudflare D1 ─────────────────────────────────────────────────────────────
-CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID")
-CF_DB_ID = os.getenv("CF_DB_ID")
-CF_API_TOKEN = os.getenv("CF_API_TOKEN")
+CF_ACCOUNT_ID  = os.getenv("CF_ACCOUNT_ID")
+CF_DB_ID       = os.getenv("CF_DB_ID")
+CF_API_TOKEN   = os.getenv("CF_API_TOKEN")
+ROBLOX_SECRET  = os.getenv("ROBLOX_SECRET", "changeme")
 
 if not all([CF_ACCOUNT_ID, CF_DB_ID, CF_API_TOKEN]):
     print("⚠️ Warning: Cloudflare D1 credentials not fully set. Database features will fail.")
@@ -389,16 +392,112 @@ async def init_database():
             "ALTER TABLE users ADD COLUMN pvp_banned INTEGER DEFAULT 0",
             "ALTER TABLE pvp_matches ADD COLUMN score TEXT",
             "ALTER TABLE pvp_matches ADD COLUMN timeout_flag INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN roblox_ids TEXT DEFAULT '[]'",
+            "ALTER TABLE raids ADD COLUMN host_roblox_ids TEXT DEFAULT '[]'",
         ]:
             try:
                 await d1_query(col_sql)
             except Exception:
                 pass
 
+        # Indexes — safe to run repeatedly (IF NOT EXISTS)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_users_in_raid       ON users(in_raid)",
+            "CREATE INDEX IF NOT EXISTS idx_raids_active        ON raids(is_completed)",
+            "CREATE INDEX IF NOT EXISTS idx_pvp_matches_p1      ON pvp_matches(player1_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pvp_matches_p2      ON pvp_matches(player2_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pvp_matches_ended   ON pvp_matches(ended_at)",
+            "CREATE INDEX IF NOT EXISTS idx_mod_actions_target  ON mod_actions(target_id)",
+            "CREATE INDEX IF NOT EXISTS idx_blacklist_expires   ON blacklist(expires_at)",
+        ]:
+            try:
+                await d1_query(idx_sql)
+            except Exception:
+                pass
+
         print("✅ All database tables initialized successfully!")
+
+        # ── Incremental roblox_ids migration ──────────────────────────────────
+        # Runs only for users who have names stored but no IDs yet.
+        # On subsequent startups this query returns 0 rows → instant no-op.
+        await _migrate_roblox_ids()
+
     except Exception as e:
         print(f"❌ Database initialization error: {e}")
         raise
+
+
+async def _migrate_roblox_ids():
+    """Populate roblox_ids for any user whose column is still empty."""
+    rows = (await d1_query(
+        "SELECT discord_id, roblox_users FROM users"
+        " WHERE roblox_users IS NOT NULL AND roblox_users != '[]'"
+        " AND (roblox_ids IS NULL OR roblox_ids = '[]')"
+    )).get("results", [])
+
+    if not rows:
+        return  # nothing to migrate
+
+    print(f"[Migration] Populating roblox_ids for {len(rows)} user(s)...")
+
+    # Collect all unique names across unmigrated users
+    user_names: dict[str, list[str]] = {}
+    all_names: list[str] = []
+    for row in rows:
+        names = json.loads(row["roblox_users"] or "[]")
+        user_names[row["discord_id"]] = names
+        all_names.extend(names)
+
+    unique_names = list({n.lower(): n for n in all_names}.values())
+
+    # Resolve names → IDs via Roblox public API (100 per batch)
+    name_to_id: dict[str, tuple[int, str]] = {}
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(unique_names), 100):
+            batch = unique_names[i:i + 100]
+            try:
+                async with session.post(
+                    "https://users.roblox.com/v1/usernames/users",
+                    json={"usernames": batch, "excludeBannedUsers": False},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for entry in data.get("data", []):
+                            key = entry["requestedUsername"].lower()
+                            name_to_id[key] = (entry["id"], entry["name"])
+                    else:
+                        print(f"[Migration] Roblox API returned {resp.status} for batch {i}–{i+len(batch)}")
+            except Exception as e:
+                print(f"[Migration] Roblox API error for batch {i}: {e}")
+            if i + 100 < len(unique_names):
+                await asyncio.sleep(1.5)  # avoid rate limiting
+
+    # Update each user
+    updated = skipped = 0
+    for discord_id, names in user_names.items():
+        ids: list[int] = []
+        corrected: list[str] = []
+        for name in names:
+            result = name_to_id.get(name.lower())
+            if result:
+                roblox_id, current_name = result
+                ids.append(roblox_id)
+                corrected.append(current_name)
+            else:
+                corrected.append(name)  # keep old name; account may be deleted/banned
+
+        if not ids:
+            skipped += 1
+            continue
+
+        await d1_query(
+            "UPDATE users SET roblox_ids = ?, roblox_users = ? WHERE discord_id = ?",
+            [json.dumps(ids), json.dumps(corrected), discord_id],
+        )
+        updated += 1
+
+    print(f"[Migration] Done — {updated} updated, {skipped} skipped (no resolvable IDs)")
 
 
 # ── Bot Intents ──────────────────────────────────────────────────────────────
@@ -511,8 +610,93 @@ class MyBot(commands.Bot):
                 print(f"❌ Webhook error: {e}")
                 return web.Response(status=500, text="Internal error")
 
+        async def handle_flag_players(request):
+            """Receives flagged-player reports from the Lua client checker."""
+            try:
+                data = await request.json()
+            except Exception:
+                return web.Response(status=400, text="Invalid JSON")
+
+            if data.get("secret") != ROBLOX_SECRET:
+                return web.Response(status=403, text="Forbidden")
+
+            flagged     = data.get("flagged", [])
+            blacklisted = data.get("blacklisted", [])
+            total       = data.get("total_players", 0)
+            raid_active = data.get("raid_active", False)
+
+            if not flagged and not blacklisted:
+                return web.Response(text="OK — nothing to flag")
+
+            log_ch = self.get_channel(LOG_CHANNELS.get("general", 0))
+            if not log_ch:
+                return web.Response(status=500, text="Log channel not found")
+
+            raid_status = "Active raid in progress" if raid_active else "No active raid"
+
+            # ── Blacklisted players embed (highest priority alert) ──
+            if blacklisted:
+                extra_bl = f" (+{len(blacklisted) - 10} more)" if len(blacklisted) > 10 else ""
+                bl_embed = discord.Embed(
+                    title="🚫 BLACKLISTED Player Detected",
+                    description=(
+                        f"**{len(blacklisted)}** blacklisted player(s) joined the server "
+                        f"({total} total){extra_bl}.\n*{raid_status}*"
+                    ),
+                    color=discord.Color.dark_red(),
+                    timestamp=discord.utils.utcnow(),
+                )
+                for p in blacklisted[:10]:
+                    expires = p.get("expires_at")
+                    expires_text = f"\nExpires: `{expires[:10]}`" if expires else "\nPermanent ban"
+                    bl_embed.add_field(
+                        name=f"⛔ {p.get('displayName', '?')} (@{p.get('name', '?')})",
+                        value=(
+                            f"Roblox ID: `{p.get('userId', '?')}`\n"
+                            f"Reason: {p.get('reason', 'Unknown')}"
+                            f"{expires_text}\n"
+                            f"[Profile](https://www.roblox.com/users/{p.get('userId', 0)}/profile)"
+                        ),
+                        inline=True,
+                    )
+                bl_embed.set_footer(text="Raid Server Checker — Blacklist Alert")
+                await log_ch.send(embed=bl_embed)
+                print(f"[FlagPlayers] Blacklisted alert: {len(blacklisted)} player(s)")
+
+            # ── Unregistered players embed ──
+            if flagged:
+                extra_fl = f" (+{len(flagged) - 25} more)" if len(flagged) > 25 else ""
+                fl_embed = discord.Embed(
+                    title="🚨 Unregistered Players Detected",
+                    description=(
+                        f"**{len(flagged)}** player(s) found whose Roblox account is not linked to "
+                        f"any Discord account in this bot ({total} total){extra_fl}.\n"
+                        f"*{raid_status}*\n\n"
+                        f"They may not have verified, or are playing on an unregistered account. "
+                        f"Ask them to use **/verify** in Discord."
+                    ),
+                    color=discord.Color.red(),
+                    timestamp=discord.utils.utcnow(),
+                )
+                for p in flagged[:25]:
+                    fl_embed.add_field(
+                        name=f"{p.get('displayName', '?')} (@{p.get('name', '?')})",
+                        value=(
+                            f"Roblox ID: `{p.get('userId', '?')}`\n"
+                            f"Reason: {p.get('reason', 'Unknown')}\n"
+                            f"[Profile](https://www.roblox.com/users/{p.get('userId', 0)}/profile)"
+                        ),
+                        inline=True,
+                    )
+                fl_embed.set_footer(text="Raid Server Checker")
+                await log_ch.send(embed=fl_embed)
+                print(f"[FlagPlayers] Flagged {len(flagged)} unregistered player(s)")
+
+            return web.Response(text="OK")
+
         app = web.Application()
         app.router.add_post('/auth/roblox_callback', handle_roblox_callback)
+        app.router.add_post('/raid/flag-players', handle_flag_players)
 
         runner = web.AppRunner(app)
         await runner.setup()
