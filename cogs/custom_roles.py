@@ -25,29 +25,28 @@ from bot import (
 )
 
 # ─── Constants ────────────────────────────────────────────
-CUSTOM_ROLE_CHANNEL_ID = 1536249281923653674
-ELIGIBLE_ROLES = {BOOSTER_ROLE_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
+CUSTOM_ROLE_CHANNEL_ID = 1537778520967614499
+ELIGIBLE_ROLES = {HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID}
 ICONS_FOLDER = Path("icons")
-BOT_ROLE_ID = 1535635733791121443
+BOT_ROLE_ID = 1537778520229412866
 
 logger = logging.getLogger(__name__)
 
 # ─── Mapping: base name → role ID ──────────────────────
 ROLE_ICON_MAP = {
-    "bot": 1535558679959576688,
-    "founder": 1535553078852325506,
-    "headstaff": 1535558010431340604,
-    "staff": 1536740055643594782,
-    "mod": 1535558108590383184,
-    "trialmod": 1535558050532827186,
-    "elitehoster": 1535557474042642432,
-    "hoster": 1535556016865808444,
-    "booster": 1535570767855624262,
-    "blacklisted": 1535669616721002626,
-    "linked": 1535663327085076572,
-    "verified": 1535554357762850817,
-    "ghoster": 1536325001584578621,
-    "trialhoster": 1537019401847439410,
+    "bot":         1537778520229412866,
+    "founder":     1537778520229412871,
+    "headstaff":   1537778520229412870,
+    "staff":       1537778520229412869,
+    "mod":         1537778520229412868,
+    "trialmod":    1537778520229412867,
+    "elitehoster": 1537778520229412865,
+    "hoster":      1537778520217096231,
+    "blacklisted": 1537778520217096229,
+    "linked":      1537778520217096227,
+    "verified":    1537778520217096226,
+    "ghoster":     1537778520217096228,
+    "trialhoster": 1537778520217096230,
 }
 
 # ─── Icon cache ───────────────────────────────────────────

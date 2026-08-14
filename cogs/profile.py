@@ -20,26 +20,26 @@ PLACEMENT_MATCHES = 10
 
 # Priority-ordered rank role IDs — first match wins regardless of Discord role position
 RANK_PRIORITY = [
-    1535553078852325506,   # Founder
-    1535558010431340604,   # Head Staff
-    1536740055643594782,   # Staff
-    1535558108590383184,   # Mod
-    1535558050532827186,   # Trial Mod
-    1535556016865808444,   # Hoster
-    1537019401847439410,   # Trial Hoster
-    1535554357762850817,   # Verified
+    1537778520229412871,   # Founder
+    1537778520229412870,   # Head Staff
+    1537778520229412869,   # Staff
+    1537778520229412868,   # Mod
+    1537778520229412867,   # Trial Mod
+    1537778520217096231,   # Hoster
+    1537778520217096230,   # Trial Hoster
+    1537778520217096226,   # Verified
 ]
 
 # Gradient color pairs (start, end) for each rank role — used for the accent strip
 ROLE_GRADIENTS: dict[int, tuple[tuple, tuple]] = {
-    1535553078852325506: ((220, 220, 235), (120, 120, 140)),  # Founder:     silver-lilac
-    1535558010431340604: ((147,  51, 234), ( 88,  28, 135)),  # Head Staff:  deep purple
-    1536740055643594782: ((249, 115,  22), (180,  58,   8)),  # Staff:       orange
-    1535558108590383184: ((239,  68,  68), (153,  27,  27)),  # Mod:         crimson
-    1535558050532827186: ((236,  72, 153), (157,  23,  77)),  # Trial Mod:   rose-pink
-    1535556016865808444: ((132, 204,  22), ( 63,  98,  18)),  # Hoster:      lime
-    1537019401847439410: ((255, 122, 224), (196,  23, 138)),  # Trial Hoster: magenta-pink
-    1535554357762850817: (( 52, 211, 153), (  6,  95,  70)),  # Verified:    emerald
+    1537778520229412871: ((220, 220, 235), (120, 120, 140)),  # Founder:      silver-lilac
+    1537778520229412870: ((147,  51, 234), ( 88,  28, 135)),  # Head Staff:   deep purple
+    1537778520229412869: ((249, 115,  22), (180,  58,   8)),  # Staff:        orange
+    1537778520229412868: ((239,  68,  68), (153,  27,  27)),  # Mod:          crimson
+    1537778520229412867: ((236,  72, 153), (157,  23,  77)),  # Trial Mod:    rose-pink
+    1537778520217096231: ((132, 204,  22), ( 63,  98,  18)),  # Hoster:       lime
+    1537778520217096230: ((255, 122, 224), (196,  23, 138)),  # Trial Hoster: magenta-pink
+    1537778520217096226: (( 52, 211, 153), (  6,  95,  70)),  # Verified:     emerald
 }
 
 PVP_TIERS = [

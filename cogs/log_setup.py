@@ -6,22 +6,32 @@ from discord.ext import commands
 import bot as bot_module
 from bot import d1_query, GUILD_ID, HEAD_STAFF_ROLE_ID, FOUNDER_ROLE_ID
 
-LOG_CATEGORY_ID = 1535570426552520734
+LOG_CATEGORY_NAME = "◆ ＬＯＧＳ ◆"
 
 # (key, channel-name, topic)
 _CHANNELS = [
-    ("raids",        "raid-logs",         "Raid events, hoster points, and flagged raids"),
-    ("trial_hoster", "trial-hoster-logs", "Trial hoster progress, promotions, and expirations"),
-    ("tickets",      "ticket-logs",       "Support ticket activity and staff applications"),
-    ("moderation",   "mod-logs",          "Moderation actions: warns, mutes, bans"),
-    ("verification", "verify-logs",       "Roblox verification events"),
-    ("members",      "member-logs",       "Member joins and leaves"),
-    ("messages",     "message-logs",      "Edited and deleted messages"),
-    ("giveaways",    "giveaway-logs",     "Giveaway creation and winners"),
-    ("shop",         "shop-logs",         "Shop purchases and transactions"),
-    ("pvp",          "pvp-logs",          "PvP match results"),
-    ("general",      "bot-logs",          "General bot activity"),
+    ("raids",         "raid-logs",         "Raid events, hoster points, and flagged raids"),
+    ("trial_hoster",  "trial-hoster-logs", "Trial hoster progress, promotions, and expirations"),
+    ("tickets",       "ticket-logs",       "Support ticket activity and staff applications"),
+    ("moderation",    "mod-logs",          "Moderation actions: warns, mutes, bans"),
+    ("verification",  "verify-logs",       "Roblox verification events"),
+    ("manual_verify", "manual-verify",     "Manual verification requests for staff review"),
+    ("members",       "member-logs",       "Member joins and leaves"),
+    ("messages",      "message-logs",      "Edited and deleted messages"),
+    ("giveaways",     "giveaway-logs",     "Giveaway creation and winners"),
+    ("shop",          "shop-logs",         "Shop purchases and transactions"),
+    ("pvp",           "pvp-logs",          "PvP match results"),
+    ("general",       "bot-logs",          "General bot activity"),
 ]
+
+
+async def get_or_create_category(guild: discord.Guild, name: str) -> discord.CategoryChannel:
+    """Find a Discord category by name, or create it if missing."""
+    cat = discord.utils.get(guild.categories, name=name)
+    if cat is None:
+        cat = await guild.create_category(name)
+        print(f"[LogSetup] Created category '{name}' ({cat.id})")
+    return cat
 
 
 async def ensure_log_channels(bot: commands.Bot) -> None:
@@ -31,10 +41,7 @@ async def ensure_log_channels(bot: commands.Bot) -> None:
         print("[LogSetup] Guild not found.")
         return
 
-    category = guild.get_channel(LOG_CATEGORY_ID)
-    if not isinstance(category, discord.CategoryChannel):
-        print(f"[LogSetup] Category {LOG_CATEGORY_ID} not found — channels will not be created.")
-        return
+    category = await get_or_create_category(guild, LOG_CATEGORY_NAME)
 
     head_staff = guild.get_role(HEAD_STAFF_ROLE_ID)
     founder    = guild.get_role(FOUNDER_ROLE_ID)

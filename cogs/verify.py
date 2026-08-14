@@ -38,8 +38,6 @@ except ImportError:
         return None
 
 # ── Channel IDs ──────────────────────────────────────────────────────────────
-VERIFICATION_CHANNEL_ID = 1535735916893831260
-MANUAL_VERIFY_CHANNEL_ID = 1536697345251737730
 
 # ── Roles to ping for manual verification ──────────────────────────────────
 PING_ROLES = [
@@ -84,7 +82,7 @@ async def send_log(bot: commands.Bot, embed: discord.Embed):
 
 async def send_verification_log(bot: commands.Bot, embed: discord.Embed):
     """Send a verification log to the manual verification channel"""
-    channel = bot.get_channel(MANUAL_VERIFY_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("manual_verify", 0))
     if channel:
         try:
             await channel.send(embed=embed)
@@ -506,7 +504,7 @@ async def send_manual_verification(bot: commands.Bot, interaction: discord.Inter
                                    user: discord.Member, roblox_name: str,
                                    roblox_id: int, flags: list):
     """Send a manual verification request to the manual verify channel"""
-    channel = bot.get_channel(MANUAL_VERIFY_CHANNEL_ID)
+    channel = bot.get_channel(LOG_CHANNELS.get("manual_verify", 0))
     if not channel:
         return await interaction.followup.send(
             "❌ Manual verification channel not found. Please contact staff.",

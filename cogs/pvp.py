@@ -25,8 +25,8 @@ from bot import (
 )
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-PVP_CHANNEL_ID: int    = 1536655138754789386
-PVP_CATEGORY_ID: int   = 1536654892947603516
+PVP_CHANNEL_ID: int    = 1537778521428992022
+PVP_CATEGORY_NAME      = "◆ ＰＶＰ ◆"
 PLACEMENT_MATCHES      = 10
 BASE_ELO               = 1000
 K_FACTOR_NEW           = 32
@@ -45,14 +45,14 @@ SCORE_WEIGHTS = {
 
 # ── Rank tiers ─────────────────────────────────────────────────────────────────
 RANK_TIERS = [
-    (0.01, "Master",   1536656379308285984),
-    (0.05, "Amethyst", 1536658641346895892),
-    (0.15, "Platinum", 1536658838273663047),
-    (0.30, "Gold",     1536658878400303174),
-    (0.55, "Silver",   1536658921912012881),
-    (1.00, "Bronze",   1536658975356092416),
+    (0.01, "Master",   1537778520217096225),
+    (0.05, "Amethyst", 1537778520217096224),
+    (0.15, "Platinum", 1537778520217096223),
+    (0.30, "Gold",     1537778520217096222),
+    (0.55, "Silver",   1537778519843672144),
+    (1.00, "Bronze",   1537778519843672143),
 ]
-UNRANKED_ROLE_ID  = 1536659018549039214
+UNRANKED_ROLE_ID  = 1537778519843672142
 ALL_RANK_ROLE_IDS = {t[2] for t in RANK_TIERS} | {UNRANKED_ROLE_ID}
 
 _RANK_ORDER = ["Unranked", "Bronze", "Silver", "Gold", "Platinum", "Amethyst", "Master"]
@@ -1059,7 +1059,7 @@ async def _create_match_channel(
         if role:
             overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
 
-    category  = guild.get_channel(PVP_CATEGORY_ID) if PVP_CATEGORY_ID else None
+    category  = discord.utils.get(guild.categories, name=PVP_CATEGORY_NAME) or await guild.create_category(PVP_CATEGORY_NAME)
     chan_name  = f"pvp-{p1.display_name[:10]}-vs-{p2.display_name[:10]}".lower().replace(" ", "-")
 
     try:

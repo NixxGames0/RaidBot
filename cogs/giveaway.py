@@ -22,10 +22,10 @@ from bot import (
 )
 
 # ─── Constants ──────────────────────────────────────────────
-GIVEAWAY_HOST_ROLE_ID = 1536325001584578621
-GIVEAWAY_PING_ROLE_ID = 1536324869422063626
+GIVEAWAY_HOST_ROLE_ID  = 1537778520217096228
+GIVEAWAY_PING_ROLE_ID  = 1537778519843672140
 
-TICKET_CATEGORY_ID = 1535905899854430222
+TICKET_CATEGORY_NAME   = "◆ ＴＩＣＫＥＴＳ ◆"
 DEFAULT_WINNERS = 1
 
 # ─── Database setup ─────────────────────────────────────────
@@ -199,11 +199,9 @@ class ConfirmDeliverView(discord.ui.View):
 # ─── Ticket creation ────────────────────────────────────────
 async def create_giveaway_ticket(bot: commands.Bot, guild: discord.Guild, giveaway_data: dict, winner_id: int):
     """Create a ticket channel for the giveaway winner."""
-    category = guild.get_channel(TICKET_CATEGORY_ID)
-    if category:
-        print(f"✅ Found ticket category {category.name} ({category.id})")
-    else:
-        print(f"⚠️ Ticket category {TICKET_CATEGORY_ID} not found. Will create channel without category.")
+    category = discord.utils.get(guild.categories, name=TICKET_CATEGORY_NAME)
+    if category is None:
+        category = await guild.create_category(TICKET_CATEGORY_NAME)
 
     host = guild.get_member(int(giveaway_data["host_id"]))
     winner = guild.get_member(winner_id)

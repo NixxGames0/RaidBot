@@ -24,8 +24,8 @@ from bot import (
 )
 
 # ── Channel IDs ──────────────────────────────────────────────────────────────
-TICKET_PANEL_CHANNEL_ID = 1535906243435040788
-TICKET_CATEGORY_ID = 1535905899854430222
+TICKET_PANEL_CHANNEL_ID  = 1537778520967614498
+TICKET_CATEGORY_NAME     = "◆ ＴＩＣＫＥＴＳ ◆"
 
 # ── Staff Roles ──────────────────────────────────────────────────────────────
 STAFF_ROLES = {
@@ -366,7 +366,7 @@ class TicketModal(discord.ui.Modal, title="Create Ticket"):
         ticket_id = str(uuid.uuid4())[:8]
 
         # Get category
-        category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
+        category = discord.utils.get(interaction.guild.categories, name=TICKET_CATEGORY_NAME) or await interaction.guild.create_category(TICKET_CATEGORY_NAME)
         if not category:
             return await interaction.followup.send(
                 "❌ Ticket category not found. Please contact staff.",
@@ -791,7 +791,7 @@ class StaffApplicationModal(discord.ui.Modal):
                 ephemeral=True
             )
 
-        category = interaction.guild.get_channel(TICKET_CATEGORY_ID)
+        category = discord.utils.get(interaction.guild.categories, name=TICKET_CATEGORY_NAME) or await interaction.guild.create_category(TICKET_CATEGORY_NAME)
         if not category:
             return await interaction.followup.send("❌ Ticket category not found.", ephemeral=True)
 

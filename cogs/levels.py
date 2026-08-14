@@ -24,7 +24,7 @@ from bot import (
 )
 
 # ── Role IDs ──────────────────────────────────────────────────────────────────
-BOOSTER_ROLE_ID = 1535570767855624262  # Server Booster role
+BOOSTER_ROLE_ID = 0  # no Nitro booster role in this server
 
 # ── XP Configuration ─────────────────────────────────────────────────────────
 XP_MIN = 15

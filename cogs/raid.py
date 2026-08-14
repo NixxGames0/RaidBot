@@ -50,10 +50,10 @@ async def award_xp(user_id: int, amount: int, member: discord.Member = None) -> 
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
-HOST_CHANNEL_ID = 1535562445286801438
-RAID_GATE_ID = 1535561934534082610
+HOST_CHANNEL_ID = 1537778521173401737
+RAID_GATE_ID    = 1537778521173401733
 
-PING_ROLE_ID = 1535696574150090772
+PING_ROLE_ID = 1537778519843672141
 
 RAID_TIMEOUT_MINUTES = 120
 

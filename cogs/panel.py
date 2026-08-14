@@ -23,14 +23,14 @@ from bot import (
 )
 
 # ── Panel Channel IDs ──────────────────────────────────────────────────────
-PS_PANEL_CHANNEL_ID = 1535598731007623249
-VERIFY_PANEL_CHANNEL_ID = 1535662578993340507
-RAID_PANEL_CHANNEL_ID = 1535562445286801438
-TICKET_PANEL_CHANNEL_ID = 1535906243435040788
-SHOP_PANEL_CHANNEL_ID = 1535562484788891658
-RAID_GATE_CHANNEL_ID = 1535561934534082610
-RULES_CHANNEL_ID = 1535979621193883648
-PVP_PANEL_CHANNEL_ID = 1536655138754789386
+PS_PANEL_CHANNEL_ID      = 1537778521173401738
+VERIFY_PANEL_CHANNEL_ID  = 1537778521173401732
+RAID_PANEL_CHANNEL_ID    = 1537778521173401737
+TICKET_PANEL_CHANNEL_ID  = 1537778520967614498
+SHOP_PANEL_CHANNEL_ID    = 1537778521173401739
+RAID_GATE_CHANNEL_ID     = 1537778521173401733
+RULES_CHANNEL_ID         = 1537778520967614497
+PVP_PANEL_CHANNEL_ID     = 1537778521428992022
 
 # ── Import custom role panel builder ─────────────────────────────────────
 from cogs.custom_roles import CUSTOM_ROLE_CHANNEL_ID, build_custom_role_panel
@@ -501,7 +501,7 @@ class Panel(commands.Cog):
                     "• **Link your Roblox account** using `/verify <username>`.\n"
                     "• **Add the verification code** to your Roblox profile.\n"
                     "• **Click 'I've Added It'** to complete verification.\n"
-                    "• **Need help?** Open a ticket in <#1535906243435040788>."
+                    "• **Need help?** Open a ticket in <#1537778520967614498>."
                 ),
                 inline=False
             )
@@ -558,7 +558,7 @@ class Panel(commands.Cog):
             rules_embed.add_field(
                 name="📞 **12. Need Help?**",
                 value=(
-                    "• **Staff Contact:** Open a ticket in <#1535906243435040788>\n"
+                    "• **Staff Contact:** Open a ticket in <#1537778520967614498>\n"
                     "• **Report a Player:** Open a ticket with evidence\n"
                     "• **Blacklist Appeal:** Open a 'Blacklist Appeal' ticket\n\n"
                     "**Thank you for being part of Raid Hub!** 🎮"

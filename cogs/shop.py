@@ -25,8 +25,8 @@ from bot import (
 )
 
 # ── Channel IDs ──────────────────────────────────────────────────────────────
-SHOP_PANEL_CHANNEL_ID = 1535562484788891658
-SHOP_ORDER_CATEGORY_ID = 1535922322974838824
+SHOP_PANEL_CHANNEL_ID      = 1537778521173401739
+SHOP_ORDER_CATEGORY_NAME   = "◆ ＯＲＤＥＲＳ ◆"
 
 # ── Staff Roles ──────────────────────────────────────────────────────────────
 STAFF_ROLES = {
@@ -344,7 +344,7 @@ class ShopConfirmView(discord.ui.View):
         total_earned = await get_user_total_earned(self.user_id)
 
         # Get the shop category
-        category = interaction.guild.get_channel(SHOP_ORDER_CATEGORY_ID)
+        category = discord.utils.get(interaction.guild.categories, name=SHOP_ORDER_CATEGORY_NAME) or await interaction.guild.create_category(SHOP_ORDER_CATEGORY_NAME)
         if not category:
             return await interaction.followup.send(
                 "❌ Order category not found. Please contact staff.",
