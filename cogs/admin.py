@@ -964,6 +964,104 @@ class Admin(commands.Cog):
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
+    # ── /resetlinkage ───────────────────────────────────────────────────────
+    @app_commands.command(
+        name="resetlinkage",
+        description="Remove Roblox linkage for ALL users — keeps all other data (Founder only)"
+    )
+    async def resetlinkage(self, interaction: discord.Interaction):
+        if not is_founder(interaction.user):
+            return await interaction.response.send_message(
+                "❌ This command is restricted to Founders only.",
+                ephemeral=True
+            )
+
+        class ConfirmView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=30)
+                self.confirmed = False
+
+            @discord.ui.button(label="Confirm Reset", style=discord.ButtonStyle.danger)
+            async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.confirmed = True
+                self.stop()
+                await btn_interaction.response.defer()
+
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+            async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+                await btn_interaction.response.edit_message(
+                    content="❌ Reset cancelled.", embed=None, view=None
+                )
+
+        embed = discord.Embed(
+            title="⚠️ Reset All Roblox Linkage",
+            description=(
+                "This will clear `roblox_users` and `roblox_ids` for **every user** in the database "
+                "and remove the Verified and Linked roles from all server members.\n\n"
+                "**All other data (points, raids, XP, etc.) is kept.**\n\n"
+                "Are you sure?"
+            ),
+            color=discord.Color.orange(),
+        )
+        view = ConfirmView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await view.wait()
+
+        if not view.confirmed:
+            return
+
+        await interaction.edit_original_response(
+            content="⏳ Resetting linkage…", embed=None, view=None
+        )
+
+        try:
+            # Clear linkage columns for every user
+            await d1_query(
+                "UPDATE users SET roblox_users = '[]', roblox_ids = '[]'"
+            )
+
+            # Remove Verified and Linked roles from all current members
+            guild = interaction.guild
+            verified_role = guild.get_role(VERIFIED_ROLE_ID)
+            linked_role   = guild.get_role(LINKED_ROLE_ID)
+            removed = 0
+            errors  = 0
+
+            for member in guild.members:
+                roles_to_remove = [
+                    r for r in (verified_role, linked_role)
+                    if r and r in member.roles
+                ]
+                if not roles_to_remove:
+                    continue
+                try:
+                    await member.remove_roles(*roles_to_remove, reason="Linkage reset by Founder")
+                    removed += 1
+                except Exception:
+                    errors += 1
+
+            await interaction.edit_original_response(
+                content=f"✅ Linkage reset complete. Roles removed from **{removed}** member(s)" +
+                        (f" ({errors} error(s))." if errors else ".")
+            )
+
+            embed = discord.Embed(
+                title="🔄 Roblox Linkage Reset",
+                color=discord.Color.red(),
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="By", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Roles Removed From", value=str(removed), inline=True)
+            if errors:
+                embed.add_field(name="Errors", value=str(errors), inline=True)
+            embed.set_footer(text="All roblox_users and roblox_ids cleared in DB")
+            await send_log(self.bot, embed)
+
+        except Exception as e:
+            await interaction.edit_original_response(content=f"❌ Error: {e}")
+
+
 async def setup(bot: commands.Bot):
     """Setup function for the cog"""
     await bot.add_cog(Admin(bot))
