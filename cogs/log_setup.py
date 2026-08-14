@@ -41,46 +41,64 @@ async def ensure_log_channels(bot: commands.Bot) -> None:
         print("[LogSetup] Guild not found.")
         return
 
-    category = await get_or_create_category(guild, LOG_CATEGORY_NAME)
+    try:
+        category = await get_or_create_category(guild, LOG_CATEGORY_NAME)
+    except Exception as e:
+        print(f"[LogSetup] Failed to get/create log category: {e}")
+        return
 
     head_staff = guild.get_role(HEAD_STAFF_ROLE_ID)
     founder    = guild.get_role(FOUNDER_ROLE_ID)
 
+    created = 0
+    ok = 0
+    failed = 0
+
     for key, name, topic in _CHANNELS:
         db_key = f"log_channel_{key}"
 
-        # Load saved ID from D1
-        rows = await d1_query("SELECT value FROM bot_meta WHERE key = ?", [db_key])
-        results = rows.get("results", []) if rows else []
-        saved_id = int(results[0]["value"]) if results else None
+        try:
+            # Load saved ID from D1
+            rows = await d1_query("SELECT value FROM bot_meta WHERE key = ?", [db_key])
+            results = rows.get("results", []) if rows else []
+            saved_id = int(results[0]["value"]) if results else None
 
-        channel = bot.get_channel(saved_id) if saved_id else None
+            # Verify the saved channel still exists in this guild
+            channel = guild.get_channel(saved_id) if saved_id else None
 
-        if channel is None:
-            overwrites: dict = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            }
-            for role in (head_staff, founder):
-                if role:
-                    overwrites[role] = discord.PermissionOverwrite(
-                        view_channel=True, send_messages=False
-                    )
+            if channel is None:
+                overwrites: dict = {
+                    guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                }
+                for role in (head_staff, founder):
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(
+                            view_channel=True, send_messages=False
+                        )
 
-            channel = await guild.create_text_channel(
-                name=name,
-                category=category,
-                topic=topic,
-                overwrites=overwrites,
-            )
-            await d1_query(
-                "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
-                [db_key, str(channel.id)],
-            )
-            print(f"[LogSetup] Created #{name} ({channel.id})")
-        else:
-            print(f"[LogSetup] #{name} OK ({channel.id})")
+                channel = await guild.create_text_channel(
+                    name=name,
+                    category=category,
+                    topic=topic,
+                    overwrites=overwrites,
+                )
+                await d1_query(
+                    "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+                    [db_key, str(channel.id)],
+                )
+                print(f"[LogSetup] Created #{name} ({channel.id})")
+                created += 1
+            else:
+                print(f"[LogSetup] #{name} OK ({channel.id})")
+                ok += 1
 
-        bot_module.LOG_CHANNELS[key] = channel.id
+            bot_module.LOG_CHANNELS[key] = channel.id
+
+        except Exception as e:
+            print(f"[LogSetup] Failed to create #{name}: {e}")
+            failed += 1
+
+    print(f"[LogSetup] Done — {created} created, {ok} existing, {failed} failed.")
 
 
 class LogSetup(commands.Cog):
