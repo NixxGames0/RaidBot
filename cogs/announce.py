@@ -66,22 +66,34 @@ class AnnounceModal(discord.ui.Modal, title="📢 New Announcement"):
         )
         embed.set_footer(text=f"Announced by {interaction.user.display_name}")
 
+        # Acknowledge the modal first so Discord never shows "interaction failed".
+        await interaction.response.send_message(
+            f"📢 Sending announcement to <#{ANNOUNCE_CHANNEL_ID}>...", ephemeral=True
+        )
+
         try:
+            # Message 1: the @Verified @Linked ping
             await channel.send(
                 content=f"<@&{VERIFIED_ROLE_ID}> <@&{LINKED_ROLE_ID}>",
-                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False,
+                    users=False,
+                    roles=[VERIFIED_ROLE_ID, LINKED_ROLE_ID],
+                ),
             )
+            # Message 2: the announcement embed right after
+            await channel.send(embed=embed)
         except discord.Forbidden:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "❌ I don't have permission to send in the announcements channel.",
                 ephemeral=True,
             )
         except discord.HTTPException as e:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 f"❌ Failed to send announcement: {e}", ephemeral=True
             )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Announcement sent to <#{ANNOUNCE_CHANNEL_ID}>!", ephemeral=True
         )
 
