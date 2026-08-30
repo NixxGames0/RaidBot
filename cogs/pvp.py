@@ -1184,7 +1184,6 @@ class PvPCog(commands.Cog):
         self.bot = bot
         self._panel_msg_id: int | None = None
         self._matchmaking_task  = bot.loop.create_task(self._matchmaking_loop())
-        self._panel_task        = bot.loop.create_task(self._ensure_panel())
         self._rank_assign_task  = bot.loop.create_task(self._assign_unranked_on_startup())
         self._weekly_reset.start()
         self._elo_decay.start()
@@ -1192,7 +1191,6 @@ class PvPCog(commands.Cog):
 
     def cog_unload(self):
         self._matchmaking_task.cancel()
-        self._panel_task.cancel()
         self._rank_assign_task.cancel()
         self._weekly_reset.cancel()
         self._elo_decay.cancel()
@@ -1305,36 +1303,6 @@ class PvPCog(commands.Cog):
                 pass
         if count:
             print(f"✅ Assigned Unranked PvP role to {count} linked member(s)")
-
-    async def _ensure_panel(self):
-        await self.bot.wait_until_ready()
-        channel = self.bot.get_channel(PVP_CHANNEL_ID)
-        if not channel:
-            print(f"[PvP] Channel {PVP_CHANNEL_ID} not found")
-            return
-        try:
-            row = await d1_query("SELECT value FROM bot_meta WHERE key = 'pvp_panel_msg_id'")
-            if row["results"]:
-                stored_id = int(row["results"][0]["value"])
-                try:
-                    await channel.fetch_message(stored_id)
-                    self._panel_msg_id = stored_id
-                    return
-                except (discord.NotFound, discord.HTTPException):
-                    pass
-        except Exception:
-            pass
-
-        msg = await channel.send(embed=self._build_panel_embed(GUILD_ID), view=PvPPanelView())
-        self._panel_msg_id = msg.id
-        try:
-            await d1_query(
-                "INSERT OR REPLACE INTO bot_meta (key, value) VALUES ('pvp_panel_msg_id', ?)",
-                [str(msg.id)]
-            )
-        except Exception:
-            pass
-        print(f"✅ PvP panel sent to channel {PVP_CHANNEL_ID}")
 
     def _build_panel_embed(self, guild_id: int) -> discord.Embed:
         guild_queue = pvp_queue.get(guild_id, {})
@@ -1577,16 +1545,6 @@ class PvPCog(commands.Cog):
         return None
 
     # ── Commands ──────────────────────────────────────────────────────────
-
-    @app_commands.command(
-        name="pvpsendpanel",
-        description="Send the PvP panel to this channel (Staff only)"
-    )
-    async def pvp_send_panel(self, interaction: discord.Interaction):
-        if not is_staff(interaction.user):
-            return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
-        embed = self._build_panel_embed(interaction.guild_id)
-        await interaction.response.send_message(embed=embed, view=PvPPanelView())
 
     @app_commands.command(name="challenge", description="Challenge another player to a casual PvP match")
     @app_commands.describe(user="The player you want to challenge")
@@ -2089,8 +2047,21 @@ class PvPPanelView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         except discord.HTTPException:
             return
+        except Exception as e:
+            print(f"[PvP] start_pvp error: {e}")
+            try:
+                return await interaction.response.send_message(
+                    "❌ Something went wrong while entering PvP. Please try again.", ephemeral=True)
+            except discord.HTTPException:
+                return
 
-        err = await cog._check_queue_timeout(interaction.user.id)
+        try:
+            err = await cog._check_queue_timeout(interaction.user.id)
+        except Exception as e:
+            print(f"[PvP] queue timeout check failed: {e}")
+            return await interaction.followup.send(
+                "❌ Could not check your PvP status right now. Please try again.", ephemeral=True)
+
         if err:
             return await interaction.followup.send(err, ephemeral=True)
 
@@ -2132,10 +2103,15 @@ class MatchTypeView(discord.ui.View):
         except discord.HTTPException:
             return
 
-        row = await d1_query(
-            "SELECT pvp_elo, pvp_trust, pvp_placement_done, pvp_banned FROM users WHERE discord_id = ?",
-            [str(interaction.user.id)]
-        )
+        try:
+            row = await d1_query(
+                "SELECT pvp_elo, pvp_trust, pvp_placement_done, pvp_banned FROM users WHERE discord_id = ?",
+                [str(interaction.user.id)]
+            )
+        except Exception as e:
+            print(f"[PvP] enter queue query failed: {e}")
+            return await interaction.followup.send(
+                "❌ Could not reach the database right now. Please try again.", ephemeral=True)
         if not row["results"]:
             return await interaction.followup.send("❌ You haven't verified yet.", ephemeral=True)
 

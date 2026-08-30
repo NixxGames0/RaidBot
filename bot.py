@@ -532,6 +532,7 @@ COGS = [
     "cogs.pvp",
     "cogs.moderation",
     "cogs.trial_hoster",
+    "cogs.announce",
 ]
 
 
