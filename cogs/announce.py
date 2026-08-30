@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timezone
 
-from bot import GUILD_ID, is_staff
+from bot import GUILD_ID, VERIFIED_ROLE_ID, LINKED_ROLE_ID, is_staff
 
 # The announcements channel every /announce is posted to.
 ANNOUNCE_CHANNEL_ID = 1543481308150243429
@@ -67,7 +67,10 @@ class AnnounceModal(discord.ui.Modal, title="📢 New Announcement"):
         embed.set_footer(text=f"Announced by {interaction.user.display_name}")
 
         try:
-            await channel.send(embed=embed)
+            await channel.send(
+                content=f"<@&{VERIFIED_ROLE_ID}> <@&{LINKED_ROLE_ID}>",
+                embed=embed,
+            )
         except discord.Forbidden:
             return await interaction.response.send_message(
                 "❌ I don't have permission to send in the announcements channel.",
